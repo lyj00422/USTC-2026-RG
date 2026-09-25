@@ -1,0 +1,24 @@
+# Local/runtime-generated files
+**/__pycache__/
+**/.pytest_cache/
+runtime/logs/
+runtime/backups/
+runtime/dist/
+runtime/data/control_hub/
+runtime/data/calibration_bundle/screenshots/
+
+# Local captures, experiments, and archives
+local-materials/
+action/
+vision/
+speed_profiles/
+logs/
+data/
+pi-tools/_pulled/orange/
+*.rar
+*.zip
+
+# Raspberry Pi image/boot dump and raw measurement captures
+handoff/pi-setup/sd-boot-20260912/
+handoff/measurements/
+!handoff/measurements/README.md

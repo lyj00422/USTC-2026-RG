@@ -1,0 +1,6 @@
+opencv-contrib-python-headless==4.13.0.92
+numpy==2.5.1
+PyYAML==6.0.2
+pytest==9.0.1
+pyserial==3.5
+pigpio==1.78

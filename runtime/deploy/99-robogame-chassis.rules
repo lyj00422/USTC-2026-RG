@@ -1,0 +1,8 @@
+# /etc/udev/rules.d/99-robogame-chassis.rules
+#
+# Stable alias for the JDY-31 Bluetooth SPP tty.
+#
+# udev OWNS this symlink.  The RFCOMM link maintainer service must never create
+# or delete it: its old `rm -f /dev/robogame-chassis` raced with udev, removed
+# the alias under running programs, and was one half of the 2026-09-14 outage.
+KERNEL=="rfcomm0", SUBSYSTEM=="tty", SYMLINK+="robogame-chassis", GROUP="dialout", MODE="0660"

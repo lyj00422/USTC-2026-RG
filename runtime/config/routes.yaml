@@ -1,0 +1,56 @@
+schema_version: 1
+routes:
+  zone_1:
+    line_hold_ms: 1200
+    state_timeout_ms: 30000
+    forward_speed: 0.25
+    turn_speed: 0.20
+    tag_nodes:
+      - name: zone_1_entry_candidate
+        state: ENTER_ZONE
+        ids: [5, 6]
+        unverified: true
+      - name: zone_1_return_candidate
+        state: RETURN_MAIN_LINE
+        ids: [3, 4]
+        unverified: true
+      - name: zone_1_build_candidate
+        state: BUILD_ZONE
+        ids: [6]
+        unverified: true
+  zone_2:
+    line_hold_ms: 1200
+    state_timeout_ms: 30000
+    forward_speed: 0.25
+    turn_speed: 0.20
+    tag_nodes:
+      - name: zone_2_entry_candidate
+        state: ENTER_ZONE
+        ids: [5, 6]
+        unverified: true
+      - name: zone_2_return_candidate
+        state: RETURN_MAIN_LINE
+        ids: [3, 4]
+        unverified: true
+      - name: zone_2_build_candidate
+        state: BUILD_ZONE
+        ids: [6]
+        unverified: true
+  purple_required:
+    line_hold_ms: 1200
+    state_timeout_ms: 30000
+    forward_speed: 0.25
+    turn_speed: 0.20
+    tag_nodes:
+      - name: purple_entry_candidate
+        state: ENTER_ZONE
+        ids: [5]
+        unverified: true
+      - name: purple_return_candidate
+        state: RETURN_MAIN_LINE
+        ids: [3, 4]
+        unverified: true
+      - name: purple_build_candidate
+        state: BUILD_ZONE
+        ids: [6]
+        unverified: true

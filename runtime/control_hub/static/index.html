@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboGame 控制台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/hub.js" defer></script>
+  <script src="/static/index.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><span class="brand-name">RoboGame</span><span class="page-name">控制台</span></div>
+    <div class="signal-rail" aria-label="设备信号轨">
+      <span class="signal" id="arm-signal" data-state="DISCONNECTED">ARM --</span>
+      <span class="signal" id="camera-signal" data-state="STOPPED">CAMERA --</span>
+      <span class="signal" id="chassis-signal" data-state="DISCONNECTED">CHASSIS --</span>
+    </div>
+    <div class="header-actions"><button class="stop-button" data-global-stop type="button">全局停止</button></div>
+  </header>
+  <main class="page-shell">
+    <h1 class="section-heading">控制台</h1>
+    <p class="section-copy">联动操作台是唯一的操作前端：摄像头、机械臂、底盘与巡线都在这一页。</p>
+    <section class="module-list" id="module-list" aria-label="控制台">
+      <article class="module-row" data-module="operate"><h2 class="module-title">联动操作台</h2><div class="module-detail">摄像头、机械臂、动作包、底盘与巡线</div><a class="command-link" href="/operate">进入</a></article>
+      <article class="module-row" data-module="logs"><h2 class="module-title">运行日志</h2><div class="module-detail">查看操作、状态与故障</div><a class="command-link" href="/logs">查看</a></article>
+    </section>
+  </main>
+</body>
+</html>

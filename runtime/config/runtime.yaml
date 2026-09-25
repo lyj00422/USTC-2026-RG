@@ -1,0 +1,53 @@
+chassis:
+  device: /dev/robogame-chassis
+  baudrate: 9600
+  bluetooth_mac: 6E:53:BD:74:00:A7
+  spp_channel: 1
+  heartbeat_ms: 50
+  # The JDY-31 tears down an idle SPP session after ~13-20 s, and the maintainer
+  # service repairs it by recreating /dev/rfcomm0 -- which kills the tty that
+  # whoever is connected is holding.  While the console holds the port it sends
+  # one read-only SPD every keepalive_s seconds so the session never goes idle.
+  # SPD commands no motion; keepalive_quiet_s suppresses the tick whenever
+  # another command went out recently, because the firmware only answers the
+  # first command of a back-to-back pair.
+  keepalive_enabled: true
+  keepalive_s: 5
+  keepalive_quiet_s: 2
+  # One keepalive event in the log per minute; the raw send would be 12/min.
+  keepalive_log_every_s: 60
+  # Pair the system Bluetooth device JDY-31 with PIN 1234 before starting the hub.
+line_sensor:
+  enabled: true
+  # Measured wiring 2026-09-14: module TX -> physical pin 18/GPIO24, module RX -> pin 16/GPIO23.
+  # Verified on hardware: listening on GPIO23 yields only idle 0xFF, GPIO24 yields the $D frames.
+  transport: pigpio_soft_uart
+  device: /dev/ttyAMA0  # Ignored by pigpio_soft_uart; retained for optional hardware_uart mode.
+  rx_gpio: 24
+  tx_gpio: 23
+  baudrate: 115200
+  # Module protocol: send $0,0,1# and receive $D,x1:0,...,x8:1#.
+  frame_mode: ascii_digital
+  active_level: 0
+  reverse_order: false
+  request_command: "$0,0,1#"
+  # The module manual requires at least 20 seconds after power-on for probes to stabilize.
+  startup_delay_s: 20
+  # Retry the stream request until the first valid digital frame arrives.
+  request_retry_s: 1
+arm:
+  device: /dev/robogame-arm
+  baudrate: 115200
+  probe_timeout_ms: 2000
+  action_timeout_ms: 45000
+camera:
+  config: config/camera_config.yaml
+  output_dir: data/control_hub
+safety:
+  chassis_settle_ms: 500
+  require_real_sensors_for_auto: true
+control_hub:
+  host: 0.0.0.0
+  port: 8080
+  control_lease_ms: 900000
+  log_path: logs/control_hub.jsonl

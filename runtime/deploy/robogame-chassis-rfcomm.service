@@ -1,0 +1,28 @@
+[Unit]
+Description=RoboGame JDY-31 chassis RFCOMM link maintainer
+# Wants, not Requires: restarting bluetooth.service must NOT stop this unit.
+# With Requires, a `systemctl restart bluetooth` (which the maintainer itself
+# performs to clear a stuck session) left the service stopped and the chassis
+# unreachable.  This unit is a self-healing loop and tolerates the stack being
+# restarted underneath it.
+Wants=bluetooth.service
+After=bluetooth.service
+# Never give up: a dropped SPP link must always be retried.  A start-limit stop
+# leaves the chassis unreachable until an operator notices, which is how the
+# link stayed dead on 2026-09-14.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/robogame-chassis-rfcomm
+Restart=always
+RestartSec=3
+# rfcomm connect runs as a child of this script.  Kill both together so a stop
+# never leaves a half-open session behind.
+KillMode=mixed
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

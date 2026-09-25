@@ -1,0 +1,23 @@
+# /etc/udev/rules.d/99-robogame-arm.rules
+#
+# Stable alias for the arm's USB CH340 bridge.
+#
+# config/runtime.yaml:39 pins the arm at /dev/robogame-arm and
+# rg_runtime/app_support.py:64 defaults to the same path, but nothing ever
+# created the alias on the Pi -- only the chassis rule was installed.  2026-09-17
+# was the first time it mattered: the new arm pre-flight in run_route_v2.py
+# (_prepare_route_arm) opens that path before any movement, and died with
+#
+#   SerialException: [Errno 2] could not open port /dev/robogame-arm:
+#   [Errno 2] No such file or directory: '/dev/robogame-arm'
+#
+# while the arm itself was plugged in and healthy on /dev/ttyUSB0.
+#
+# Match the CH340's vendor/product rather than "ttyUSB*" alone: the alias has to
+# follow the arm even when another USB serial device is enumerated first and
+# pushes the arm to ttyUSB1.
+#
+# udev OWNS this symlink -- nothing else may create or delete it.  Same rule as
+# the chassis alias: a program that races udev for the node will eventually
+# remove it out from under a running owner.
+KERNEL=="ttyUSB*", SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="robogame-arm", GROUP="dialout", MODE="0660"

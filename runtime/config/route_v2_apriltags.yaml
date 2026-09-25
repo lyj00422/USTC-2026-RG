@@ -1,0 +1,36 @@
+schema_version: 1
+
+# Official route reference from the simplified field diagram supplied on
+# 2026-09-14. Route landmark numbers and AprilTag IDs are intentionally the
+# same for this route.
+dictionary: DICT_APRILTAG_36h11
+tag_size_mm: 150
+count: 6
+
+mounting:
+  placement: line_or_extension_intersection_with_field_wall
+  top_edge_height_cm: 40
+  purpose: robot_positioning_and_pose_correction
+
+route_points:
+  - point: 1
+    name: START
+    tag_id: 1
+  - point: 2
+    name: JUNCTION_1
+    tag_id: 2
+  - point: 3
+    name: JUNCTION_2
+    tag_id: 3
+  - point: 4
+    name: JUNCTION_3
+    tag_id: 4
+  - point: 5
+    name: PICKUP_AREA
+    tag_id: 5
+  - point: 6
+    name: BUILD_AREA
+    tag_id: 6
+
+# The mapping is authoritative for route planning. Runtime detection still
+# needs field validation for visibility, pose quality, and consecutive frames.

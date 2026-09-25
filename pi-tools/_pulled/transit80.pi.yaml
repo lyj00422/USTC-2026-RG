@@ -1,0 +1,308 @@
+route_v2:
+  vision:
+    calibrated: true
+    frame_timeout_s: 0.5
+    task_startup_timeout_s: 2.0
+    result_stall_timeout_s: 1.0
+    prescan_frames: 10
+    prescan_confirm_frames: 3
+    tag_takeover_max_cm: 30.0
+    tag_takeover_timeout_s: 6.0
+    action_wait_s: 3.0
+    purple_action_package: data/route_v2_actions/purple_pickup_v1
+    purple_action_forward_speed: 20
+    purple_action_ack_timeout_s: 1.0
+    purple_place_action_package: data/route_v2_actions/purple_place_v1
+    tag_gates:
+      pickup_seek_line:
+        target_id: 3
+        center_window:
+        - 0.3
+        - 0.2
+        - 0.7
+        - 0.8
+        edge_px:
+        - 18
+        - 220
+        confirm_frames: 3
+      pickup_2_seek_line:
+        target_id: 4
+        center_window:
+        - 0.2
+        - 0.2
+        - 0.7
+        - 0.8
+        edge_px:
+        - 18
+        - 220
+        confirm_frames: 3
+    block_profiles:
+      purple_j3_prescan:
+        roi:
+        - 0.05
+        - 0.2
+        - 0.95
+        - 0.9
+        capture_window:
+        - 0.35
+        - 0.35
+        - 0.65
+        - 0.85
+        hsv_bands:
+        - lower:
+          - 110
+          - 20
+          - 70
+          upper:
+          - 150
+          - 180
+          - 220
+        lab_bands:
+        - lower:
+          - 70
+          - 131
+          - 100
+          upper:
+          - 190
+          - 155
+          - 125
+        area_px:
+        - 6000
+        - 150000
+        aspect_ratio:
+        - 0.35
+        - 2.8
+        height_px:
+        - 12
+        - 450
+        center_y:
+        - 0.45
+        - 0.95
+        min_rectangularity: 0.45
+        morphology_kernel: 3
+      purple_pickup_close:
+        roi:
+        - 0.08
+        - 0.28
+        - 0.92
+        - 0.98
+        capture_window:
+        - 0.4739738806
+        - 0.4731343284
+        - 0.5369402985
+        - 0.5805970149
+        hsv_bands:
+        - lower:
+          - 110
+          - 20
+          - 70
+          upper:
+          - 150
+          - 180
+          - 220
+        lab_bands:
+        - lower:
+          - 70
+          - 131
+          - 100
+          upper:
+          - 190
+          - 155
+          - 125
+        centroid_hsv_bands:
+        - lower:
+          - 110
+          - 20
+          - 110
+          upper:
+          - 150
+          - 180
+          - 220
+        centroid_lab_bands:
+        - lower:
+          - 110
+          - 131
+          - 100
+          upper:
+          - 190
+          - 155
+          - 125
+        centroid_min_area_px: 100000
+        area_px:
+        - 150000
+        - 600000
+        aspect_ratio:
+        - 0.45
+        - 2.2
+        height_px:
+        - 350
+        - 520
+        center_y:
+        - 0.52
+        - 0.72
+        bottom_y:
+        - 0.8
+        - 1.0
+        near_field:
+        - 0.08
+        - 0.7
+        - 0.92
+        - 0.98
+        min_near_field_fill: 0.2
+        min_rectangularity: 0.52
+        morphology_kernel: 3
+      orange_pickup_close:
+        roi:
+        - 0.08
+        - 0.28
+        - 0.92
+        - 0.98
+        capture_window:
+        - 0.42
+        - 0.42
+        - 0.58
+        - 0.88
+        hsv_bands:
+        - lower:
+          - 2
+          - 8
+          - 150
+          upper:
+          - 25
+          - 80
+          - 245
+        lab_bands: []
+        area_px:
+        - 150000
+        - 600000
+        aspect_ratio:
+        - 0.45
+        - 2.2
+        height_px:
+        - 350
+        - 520
+        center_y:
+        - 0.52
+        - 0.72
+        bottom_y:
+        - 0.8
+        - 1.0
+        near_field:
+        - 0.08
+        - 0.7
+        - 0.92
+        - 0.98
+        min_near_field_fill: 0.2
+        min_rectangularity: 0.52
+        morphology_kernel: 3
+    pickup_areas:
+      purple:
+        profile: purple_pickup_close
+        search_speed: 40
+        coarse_speed: 28
+        fine_speed: 12
+        confirm_frames: 3
+        settle_s: 0.25
+        return_tolerance_cm: 2.0
+        alignment_max_distance_cm: 25.0
+        alignment_timeout_s: 12.0
+        locked_reacquire_timeout_s: 2.0
+        max_alignment_reversals: 6
+        search_right:
+          max_distance_cm: 100.0
+          timeout_s: 30.0
+        search_left:
+          max_distance_cm: 35.0
+          timeout_s: 12.0
+      orange:
+        profile: orange_pickup_close
+        search_speed: 28
+        coarse_speed: 28
+        fine_speed: 12
+        confirm_frames: 3
+        settle_s: 0.25
+        return_tolerance_cm: 2.0
+        alignment_max_distance_cm: 25.0
+        alignment_timeout_s: 12.0
+        locked_reacquire_timeout_s: 2.0
+        max_alignment_reversals: 6
+        search_right:
+          max_distance_cm: 75.0
+          timeout_s: 28.0
+        search_left:
+          max_distance_cm: 75.0
+          timeout_s: 28.0
+  junction_mask: 128
+  junction_debounce_frames: 3
+  leave_debounce_frames: 3
+  start_to_junction_1_cm: 50
+  junction_1_max_travel_cm: 130
+  poll_period_s: 0.05
+  forward_speed: 80
+  reverse_speed: -30
+  pickup_speed: 80
+  kp: 35.0
+  ki: 1.0
+  kd: 1.2
+  integral_limit: 5.0
+  lateral_limit: 46
+  yaw_limit: 27
+  turn_deg: 90
+  # 2026-09-22：**转速保持 80，不许降。** 卡死不是转速问题，是代码问题 ——
+  # `D` 命令丢帧后无人补发（STOP 每 200ms 重发，D 只发一次）。
+  # 已在 `run_route_v2.py` 的 d 分支加了"车没转就重发"的补发逻辑。
+  # 详见 route_v2.md §7.4。
+  turn_speed: 80
+  turn_sign: 1
+  turn_timeout_s: 15.0
+  yaw_counts_per_deg: 37.1
+  tag2_search_min_cm: 40
+  tag2_search_max_cm: 90
+  tag2_strafe_speed: 80
+  seek_line_masks:
+  - 129
+  - 128
+  - 1
+  seek_line_accept_black_after_loss: true
+  seek_line_min_black_probes: 4
+  seek_line_confirm_frames: 2
+  junction_2_seek_line_vy: 50
+  junction_3_seek_line_vy: -50
+  pickup_seek_line_vy: 50
+  seek_line_max_cm: 35
+  seek_line_fallback_speed: 20
+  seek_line_timeout_s: 45.0
+  junction_2_line_loss_gate_cm: 20
+  junction_2_max_travel_cm: 400
+  junction_2_back_max_reverse_cm: 30.0
+  junction_2_back_timeout_s: 8.0
+  junction_2_back_accept_any_black: true
+  junction_3_distance_cm: 210.0
+  align_speed: -50
+  align_confirm_frames: 1
+  align_alt_mask: 0
+  align_max_reverse_cm: 8.0
+  align_forward_cm: 20.0
+  align_forward_speed: 50
+  align_forward_timeout_s: 8.0
+  align_timeout_s: 8.0
+  pickup_wait_s: 3.0
+  contact_stationary_s: 0.5
+  pickup_arrived_distance_cm: 90.0
+  pickup_2_arrived_distance_cm: 110.0
+  pickup_3_max_travel_cm: 360.0
+  pickup_3_min_travel_cm: 300.0
+  hold_course_on_line_loss:
+  - JUNCTION_PICKUP_3_TO_AREA
+  pickup_2_seek_line_vy: 50
+  purple_place_seek_line_vy: -50
+  pickup_3_turn_deg: 180
+  purple_place_min_travel_cm: 200.0
+  purple_place_arrive_cm: 230.0
+  pickup_1_return_reverse_cm: 150.0
+  pickup_1_return_forward_cm: 60.0
+  pickup_return_timeout_s: 60.0
+  pickup_2_return_reverse_cm: 30.0
+  arm_placeholder_stop_s: 3.0
+  j2_line_recovery_segment_cm: 5.0
+  loop_reverse_cm: 65.0

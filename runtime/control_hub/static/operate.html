@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>联动操作台 - RoboGame</title>
+  <link rel="stylesheet" href="/static/styles.css"><script src="/static/hub.js" defer></script><script src="/static/operate.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><a class="brand-name" href="/">RoboGame</a><span class="page-name">联动操作台</span></div>
+    <div class="signal-rail">
+      <span class="signal" id="operate-arm-signal">ARM --</span>
+      <span class="signal" id="operate-camera-signal">CAMERA --</span>
+      <span class="signal" id="operate-chassis-signal">CHASSIS --</span>
+      <span class="signal" id="operate-line-signal">LINE --</span>
+    </div>
+    <div class="header-actions">
+      <button class="control-button" data-take-control type="button">取得控制权</button>
+      <button data-safety-reset type="button">解除安全锁</button>
+      <button class="stop-button" data-global-stop type="button">全局停止</button>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <div class="operator-layout">
+
+      <section class="operator-panel operator-camera">
+        <div class="operator-panel-heading"><h1 class="section-heading">摄像头</h1><span id="operate-camera-state">CAMERA OFFLINE</span></div>
+        <div class="operator-camera-stage">
+          <img id="operate-camera-stream" data-stream-src="/api/camera/stream.mjpg" alt="摄像头实时画面" aria-label="摄像头实时画面">
+          <canvas id="operate-camera-canvas" aria-label="拖拽选择抓取区间"></canvas>
+          <span id="operate-zone-drag-rect"></span>
+          <div id="operate-camera-offline" class="camera-offline" data-camera-offline="home">摄像头未开启</div>
+        </div>
+        <div class="button-row">
+          <button data-operate-action="camera-start" type="button" disabled>开启摄像头</button>
+          <button data-operate-action="camera-stop" type="button" disabled>关闭摄像头</button>
+          <button data-operate-action="record-start" type="button" disabled>开启录像</button>
+          <button data-operate-action="record-stop" type="button" disabled>关闭录像</button>
+          <button data-operate-action="snapshot" type="button" disabled>拍照</button>
+          <a class="command-link" id="operate-snapshot-download" href="/api/camera/snapshot/latest" download>下载最新照片</a>
+        </div>
+        <div class="button-row">
+          <button data-operate-action="stream-toggle" type="button">画面移到下方 ↓</button>
+          <span class="panel-kicker">只有一路视频流 · 挪的是画面本身，连接不断</span>
+        </div>
+        <div class="editor-row">
+          <label class="inline-field">录像备注 <input id="operate-record-label" value="" maxlength="32" placeholder="可留空"></label>
+          <span class="panel-kicker" id="operate-recording-state">未录像</span>
+        </div>
+        <p class="record-status" id="operate-camera-message">机械臂保存期间可在画面上拖拽抓取窗口</p>
+
+        <div class="recording-library">
+          <div class="library-head">
+            <h2 class="library-heading">录像回传</h2>
+            <span class="panel-kicker" id="operate-recording-summary">--</span>
+          </div>
+          <div class="button-row">
+            <button data-operate-action="recordings-refresh" type="button">刷新列表</button>
+            <button data-operate-action="recordings-export" type="button" disabled>全部打包下载 (zip)</button>
+            <button class="danger-outline" data-operate-action="recordings-clear" type="button" disabled>清空录像</button>
+          </div>
+          <div class="recording-list" id="operate-recording-list"></div>
+          <p class="record-status">点「下载」直接存进本机浏览器的下载目录，不用再走 SFTP。正在录的那个文件不给下载也不给删。</p>
+        </div>
+      </section>
+
+      <!-- 机械臂和它的标定窗口占同一列：窗口是给机械臂保存动作时拖拽用的，
+           放在机械臂正下方，两栏布局下和窄屏单栏下都在同一处。 -->
+      <div class="operator-column">
+        <section class="operator-panel" id="arm-control">
+          <div class="operator-panel-heading"><h1 class="section-heading">机械臂</h1><span id="operate-arm-state">--</span></div>
+          <div class="editor-row">
+            <label class="inline-field">速度（耗时毫秒）<input class="number-field" id="operate-servo-time" type="number" value="500" min="100" max="10000"></label>
+            <span class="panel-kicker">数值越大越慢 · 五轴共用</span>
+          </div>
+          <div class="servo-editor-list" id="single-axis-recorder">
+            <div class="servo-editor-row" data-servo-axis="4"><strong>轴 5 夹具</strong><input class="pose-number" data-servo-position value="1500" type="number" min="500" max="2500"><button data-operate-action="arm-servo" type="button">发送</button></div>
+            <div class="servo-editor-row" data-servo-axis="3"><strong>轴 4 腕部</strong><input class="pose-number" data-servo-position value="1500" type="number" min="500" max="2500"><button data-operate-action="arm-servo" type="button">发送</button></div>
+            <div class="servo-editor-row" data-servo-axis="2"><strong>轴 3 小臂</strong><input class="pose-number" data-servo-position value="1500" type="number" min="500" max="2500"><button data-operate-action="arm-servo" type="button">发送</button></div>
+            <div class="servo-editor-row" data-servo-axis="1"><strong>轴 2 大臂</strong><input class="pose-number" data-servo-position value="1500" type="number" min="500" max="2500"><button data-operate-action="arm-servo" type="button">发送</button></div>
+            <div class="servo-editor-row" data-servo-axis="0"><strong>轴 1 底座</strong><input class="pose-number" data-servo-position value="1500" type="number" min="500" max="2500"><button data-operate-action="arm-servo" type="button">发送</button></div>
+          </div>
+          <div class="button-row arm-suction-row">
+            <button data-operate-action="arm-suction" data-enabled="true" type="button">吸</button>
+            <button data-operate-action="arm-suction" data-enabled="false" type="button">放</button>
+            <button class="danger-outline" data-operate-action="arm-stop" type="button">停止机械臂</button>
+          </div>
+          <div class="button-row">
+            <button data-operate-action="arm-run" data-routine="0" type="button">动作 0</button>
+            <button data-operate-action="arm-run" data-routine="1" type="button">动作 1</button>
+            <button data-operate-action="arm-run" data-routine="2" type="button">动作 2</button>
+            <button data-operate-action="arm-run" data-routine="3" type="button">动作 3</button>
+            <button data-operate-action="arm-run" data-routine="4" type="button">动作 4</button>
+            <button data-operate-action="arm-run" data-routine="5" type="button">动作 5</button>
+          </div>
+          <div class="button-row">
+            <button class="primary-button" data-operate-action="record-toggle" type="button">开始保存</button>
+            <span class="panel-kicker" id="operate-record-hint">按下开始记录，再按一次结束并命名</span>
+          </div>
+          <div id="operate-record-state" data-recording="false" class="record-status">未保存</div>
+          <div class="draft-confirm" id="operate-draft" hidden>
+            <span id="operate-draft-name">未命名动作包</span>
+            <button data-operate-action="draft-name" type="button">命名</button>
+            <button class="danger-outline" data-operate-action="draft-discard" type="button">丢弃</button>
+          </div>
+          <div class="button-row">
+            <button data-operate-action="packages-export" type="button" disabled>导出本次动作包 (zip)</button>
+            <button data-operate-action="packages-export-all" type="button" disabled>导出全部历史 (zip)</button>
+            <span class="panel-kicker" id="operate-package-count">本次 0 个包</span>
+          </div>
+          <div id="operate-arm-routine" hidden>--</div><div id="operate-arm-step" hidden>--</div>
+        </section>
+
+        <section class="operator-panel" id="pickup-window">
+          <div class="operator-panel-heading"><h1 class="section-heading">标定窗口（视觉伺服）</h1><span id="operate-message" class="operator-message">等待操作</span></div>
+          <div class="editor-row">
+            <label class="inline-field">颜色 <select id="operate-zone-color"><option value="purple">紫色</option><option value="orange">橙色</option></select></label>
+            <label class="inline-field">名称 <input class="number-field" id="operate-zone-id" value="capture"></label>
+            <input id="operate-zone-action" value="" type="hidden">
+          </div>
+          <div class="zone-fields">
+            <input id="operate-zone-x" value="0" type="number"><input id="operate-zone-y" value="0" type="number"><input id="operate-zone-w" value="0" type="number"><input id="operate-zone-h" value="0" type="number">
+            <button data-operate-action="zone-save" type="button">保存标定窗口</button>
+          </div>
+          <p class="record-status">这是给视觉伺服用的窗口；机械臂保存时拖拽的窗口进动作包，两者互不影响。</p>
+        </section>
+
+        <section class="operator-panel">
+          <div class="operator-panel-heading"><h1 class="section-heading">巡线</h1><span id="operate-line-state">--</span></div>
+          <div class="button-row">
+            <button data-operate-action="line-release" type="button">释放巡线串口</button>
+            <button data-operate-action="line-reclaim" type="button">重新占用</button>
+          </div>
+          <p class="record-status">跑自动化路线前先释放，避免路线程序重启 pigpiod 打断控制台。</p>
+          <div id="operate-line-error">--</div><div id="operate-line-intersection">--</div><div id="operate-line-lost">--</div><div id="operate-line-time">--</div>
+          <div class="line-sensors" id="operate-line-sensors"></div>
+        </section>
+      </div>
+
+      <section class="operator-panel" id="chassis-control">
+        <div class="operator-panel-heading"><h1 class="section-heading">底盘</h1><span id="operate-chassis-state">--</span></div>
+        <div id="operate-chassis-device" class="record-status">固定底盘未连接</div>
+        <div class="editor-row">
+          <label class="inline-field">速度 <input class="number-field" id="operate-speed" type="number" value="20" min="1" max="100"></label>
+          <label class="inline-field">保活 <span class="panel-kicker" id="operate-keepalive">--</span></label>
+          <button data-operate-action="chassis-release" type="button">释放底盘</button>
+        </div>
+        <div class="operator-drive">
+          <button class="drive-button drive-forward" data-operate-action="chassis-motion" data-motion="forward" type="button">前</button>
+          <button class="drive-button drive-left" data-operate-action="chassis-motion" data-motion="left" type="button">左</button>
+          <button class="drive-button drive-stop" data-operate-action="chassis-stop" type="button">停</button>
+          <button class="drive-button drive-right" data-operate-action="chassis-motion" data-motion="right" type="button">右</button>
+          <button class="drive-button drive-backward" data-operate-action="chassis-motion" data-motion="backward" type="button">后</button>
+        </div>
+        <div class="operator-rotate">
+          <button data-operate-action="chassis-motion" data-motion="rotate-left" type="button">左转</button>
+          <button data-operate-action="chassis-motion" data-motion="rotate-right" type="button">右转</button>
+        </div>
+      </section>
+
+      <!-- 底盘的伴生画面：和上面是同一路 MJPEG 流、同一个 <img> 节点，只是被搬过来。
+           开这一格纯粹是因为页面太长，开车的时候看不到最上面那块。 -->
+      <section class="operator-panel" id="chassis-camera">
+        <div class="operator-panel-heading"><h1 class="section-heading">摄像头视角</h1><span class="panel-kicker">同一路流</span></div>
+        <div class="chassis-camera-stage" id="operate-chassis-stage">
+          <div class="camera-offline" data-camera-offline="away">画面在上方 ↑</div>
+        </div>
+        <p class="record-status">开车时按上面的「画面移到下方」，画面就挪到这一格；再按一次挪回去。这里没有别的按钮。</p>
+      </section>
+
+      <div id="operate-capture-state" hidden>未录制</div>
+      <button data-operate-action="route-record" hidden type="button">路线录制</button>
+      <button data-operate-action="route-capture" hidden type="button">记录当前位置</button>
+    </div>
+  </main>
+</body></html>

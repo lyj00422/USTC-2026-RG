@@ -1,0 +1,173 @@
+#!/bin/bash
+# RoboGame JDY-31 chassis RFCOMM link maintainer.
+#
+# OWNERSHIP MODEL (read before changing anything here):
+#
+#   * This service is the only thing that creates or releases the RFCOMM TTY.
+#   * Applications that hold the port open (the runtime control hub and
+#     run_route_v2.py) take an exclusive advisory lock on $LOCK while they use
+#     it.  This service NEVER runs `rfcomm release` while that lock is held:
+#     releasing the TTY under a live consumer is what produced
+#     `[Errno 5] Input/output error` for the consumer and left the kernel
+#     session busy, after which every reconnect failed with
+#     `Can't connect RFCOMM socket: Device or resource busy`.
+#   * /dev/robogame-chassis is a udev-managed symlink
+#     (/etc/udev/rules.d/99-robogame-chassis.rules).  This script must not
+#     create or delete it; doing so raced with udev and broke the alias.
+#   * Deliberately does NOT call `bluetoothctl connect`.  The JDY-31 advertises
+#     Headset / Audio Sink / AVRCP / PBAP alongside SPP; bluetoothctl tries
+#     every profile, all of the non-SPP ones fail, and it reports
+#     br-connection-refused even though SPP itself is healthy.  `rfcomm
+#     connect` brings the ACL up on its own and is the only thing we need.
+#     Channel is confirmed via SDP ("JL_SPP").
+set -u
+
+RUNTIME_CONFIG=/home/pi/robogame-runtime/config/runtime.yaml
+# `tr -d '\r\n'` is load-bearing: a CRLF runtime.yaml (which is what a Windows
+# checkout produces) leaves a trailing carriage return on every parsed value,
+# and `rfcomm connect` then fails with "Device or resource busy" instead of
+# reporting anything about the address.  Cost: one afternoon of debugging.
+MAC=$(awk '/^chassis:/{x=1;next} x&&/^[^ ]/{x=0} x&&/bluetooth_mac:/{print $2;exit}' "$RUNTIME_CONFIG" | tr -d '\r\n')
+CHANNEL=$(awk '/^chassis:/{x=1;next} x&&/^[^ ]/{x=0} x&&/spp_channel:/{print $2;exit}' "$RUNTIME_CONFIG" | tr -d '\r\n')
+MAC=${MAC:-6E:53:BD:74:00:A7}
+CHANNEL=${CHANNEL:-1}
+DEV=/dev/rfcomm0
+LOCK=/run/lock/robogame-chassis.lock
+CONNECT_LOG=/run/robogame-rfcomm-connect.log
+# Escalation policy (rewritten 2026-09-14 22:0x).
+#
+# The first version power-cycled the adapter after every 3 failures and
+# restarted the whole stack after 5.  That is actively harmful when the *remote*
+# is the problem: `bluetoothctl power off/on` resets the controller, drops any
+# in-flight page, invalidates concurrent scans (`org.bluez.Error.NotReady`,
+# which is what made a diagnostic scan look like "no devices in range"), and
+# churns the adapter every ~30 s so the link never gets a stable window to come
+# up in.  Measured state while it was doing that: adapter healthy (19 devices
+# discovered, hciconfig errors:0) but the JDY-31 silent on every page.
+#
+# Distinguish the two failure modes instead:
+#   "Host is down"            -> the remote radio did not answer a page.  There
+#                                is nothing to fix on this end; back off and
+#                                keep re-paging.  Never touch the adapter.
+#   "Device or resource busy" -> a local kernel RFCOMM session is stuck.  This
+#                                one *does* need escalation, but rarely.
+STACK_RESTART_AFTER=20
+BACKOFF_STEPS=(2 2 4 4 8 15 30)
+
+log() { echo "$(date -Is) $*"; }
+
+# True when the adapter is not powered (e.g. after a manual `power off`).
+adapter_down() {
+    /usr/bin/bluetoothctl show 2>/dev/null | grep -q 'Powered: no'
+}
+
+# True when an application currently holds the port lock.
+port_busy() {
+    ! /usr/bin/flock -n "$LOCK" true 2>/dev/null
+}
+
+# Kill whatever rfcomm connect is still running and clear the kernel session.
+# Only ever called when no application holds the lock.
+#
+# `rfcomm release all` rather than `release 0`: after a killed `rfcomm connect`
+# the device-0 session can survive `release 0`, and the next attempt then fails
+# with "Device or resource busy" forever.  The settle sleep gives the kernel
+# time to retire the TTY before we try to bind it again.
+reset_link() {
+    if [ -n "${RFCOMM_PID:-}" ] && kill -0 "$RFCOMM_PID" 2>/dev/null; then
+        kill "$RFCOMM_PID" 2>/dev/null || true
+        wait "$RFCOMM_PID" 2>/dev/null || true
+    fi
+    /usr/bin/rfcomm release all >/dev/null 2>&1 || true
+    sleep 1
+}
+
+on_exit() {
+    if port_busy; then
+        log "stopping while an application still holds the port; leaving the TTY alone"
+        return
+    fi
+    reset_link
+}
+trap on_exit EXIT
+# TERM/INT must *exit*, otherwise systemctl stop blocks until TimeoutStopSec
+# because the loop simply resumes after the handler returns.
+trap 'exit 0' INT TERM
+
+: > "$LOCK" 2>/dev/null || true
+chmod 0666 "$LOCK" 2>/dev/null || true
+
+/usr/bin/bluetoothctl --timeout 5 power on >/dev/null 2>&1 || true
+/usr/bin/bluetoothctl --timeout 5 trust "$MAC" >/dev/null 2>&1 || true
+
+failures=0
+while :; do
+    if port_busy; then
+        log "port in use by an application; holding off (no release, no reconnect)"
+        sleep 2
+        continue
+    fi
+
+    # Recover from an adapter someone powered off by hand.  This never runs as
+    # part of the retry loop -- see the escalation note above.
+    if adapter_down; then
+        log "adapter is powered off; turning it back on"
+        /usr/bin/bluetoothctl --timeout 5 power on >/dev/null 2>&1 || true
+        sleep 3
+    fi
+
+    reset_link
+    /usr/bin/rfcomm connect 0 "$MAC" "$CHANNEL" >"$CONNECT_LOG" 2>&1 &
+    RFCOMM_PID=$!
+
+    for _ in $(seq 1 50); do
+        [ -c "$DEV" ] && break
+        sleep 0.2
+    done
+
+    if [ -c "$DEV" ]; then
+        failures=0
+        log "SPP up: $DEV present (channel $CHANNEL); holding the link"
+    else
+        failures=$((failures + 1))
+        log "connect attempt $failures failed: $(tail -n 1 "$CONNECT_LOG" 2>/dev/null)"
+    fi
+
+    # Hold the link until rfcomm exits (link dropped) or we are stopped.
+    wait "$RFCOMM_PID" 2>/dev/null || true
+    log "link dropped; will reconnect"
+
+    if [ -c "$DEV" ] || [ "$failures" -eq 0 ]; then
+        sleep 2
+        continue
+    fi
+
+    last_error=$(tail -n 1 "$CONNECT_LOG" 2>/dev/null)
+    case "$last_error" in
+        *"Host is down"*)
+            # The remote radio is not answering.  Nothing here can fix that:
+            # the chassis/JDY-31 is unpowered, already connected to another
+            # master, or out of range.  Back off and keep paging patiently.
+            idx=$((failures - 1))
+            [ "$idx" -ge "${#BACKOFF_STEPS[@]}" ] && idx=$((${#BACKOFF_STEPS[@]} - 1))
+            delay=${BACKOFF_STEPS[$idx]}
+            log "remote silent ($failures); retrying in ${delay}s -- check chassis power / that no phone is paired to the JDY-31"
+            sleep "$delay"
+            ;;
+        *)
+            if [ "$failures" -ge "$STACK_RESTART_AFTER" ]; then
+                # `rfcomm release` cannot clear a session the kernel still
+                # holds: after the service was killed under a live consumer on
+                # 2026-09-14, every attempt failed with "Device or resource
+                # busy" until the stack was restarted.  This is the only
+                # reliable reset short of a reboot, and it is deliberately rare.
+                log "restarting the Bluetooth stack after $failures failed attempts"
+                /usr/bin/systemctl restart bluetooth >/dev/null 2>&1 || true
+                failures=0
+                sleep 5
+            else
+                sleep 2
+            fi
+            ;;
+    esac
+done
