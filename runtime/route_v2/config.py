@@ -366,18 +366,10 @@ class RouteV2Config:
     # what stops the first sweep driving into whatever is out there -- but it is
     # no longer the point at which the hunt gives up.
     seek_line_max_cm: int = 35
-    # The growing swing used to reacquire the line after a grab, when the route
-    # does NOT know which side the car was left on (the orange area).
-    #
-    # FALLBACK ONLY since the evening of 2026-09-24: the orange area's hunt is
-    # ONE-WAY now, its direction derived from the last lateral command the pickup
-    # issued while reaching the block (run_route_v2's _last_pickup_lateral).  The
-    # field run of that evening is why -- the tightened ladder never stopped on
-    # any of its rungs and the car swung out to 110 cm before faulting
-    # (`return_line_swing_exhausted` in run 20260924_205505).
-    #
-    # This ladder now runs only when NO lateral command was ever seen, i.e. when
-    # there is no direction to trust.
+    # Fallback line search after a grab when no net lateral displacement gives a
+    # reliable direction. Orange normally searches opposite its net displacement;
+    # purple uses its known pickup slot. This bounded swing handles the remaining
+    # zero-displacement or unknown-slot cases.
     #
     # Operator, 2026-09-24: 「取物区1抓取完物块后 要以一个摇摆的巡线 先左右10cm
     # 再左右30cm 直到上线」, refined when asked to pin the schedule: 「左右20

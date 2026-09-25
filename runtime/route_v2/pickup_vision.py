@@ -186,13 +186,18 @@ class PurplePrescanTracker:
 
 
 class PickupVisionController:
+    SCENE_STAGNATION_FRAMES = 8
+    SCENE_CHANGE_FRACTION = 0.02
+
     def __init__(self, area: str, config: PickupAreaVisionConfig,
                  profile: BlockVisionProfile, *, frame_size: tuple[int, int],
-                 initial_search: str = "right"):
+                 initial_search: str | None = None):
         if area not in {"purple", "orange"}:
             raise ValueError("area must be purple or orange")
         if frame_size[0] <= 0 or frame_size[1] <= 0:
             raise ValueError("frame_size must be positive")
+        if initial_search is None:
+            initial_search = "left" if area == "orange" else "right"
         if initial_search not in {"left", "center", "right"}:
             raise ValueError("initial_search must be left, center or right")
         self.area = area
@@ -233,15 +238,64 @@ class PickupVisionController:
         self._locked_lost_started: float | None = None
         self._alignment_direction: str | None = None
         self._alignment_reversals = 0
+        self._last_scene_frame_id: int | None = None
+        self._last_scene_signature: bytes | None = None
+        self._scene_stagnant_frames = 0
+        self._motion_expected = False
 
     def _intent(self, kind: str, *, speed: int = 0, reason: str = "",
                 result: str | None = None) -> PickupVisionIntent:
+        self._motion_expected = kind in {
+            "strafe_left", "strafe_right", "align_left", "align_right",
+        }
         return PickupVisionIntent(kind, self.phase, speed, reason, result)
+
+    def _camera_view_stagnant(self, *, frame_id: int | None,
+                              frame_signature: bytes | None) -> bool:
+        if (self.area != "orange" or frame_id is None
+                or frame_signature is None
+                or self.phase not in {
+                    PickupPhase.SEARCH_LEFT, PickupPhase.SEARCH_RIGHT,
+                    PickupPhase.ALIGNING,
+                }):
+            self._scene_stagnant_frames = 0
+            return False
+        if (self._last_scene_frame_id is not None
+                and frame_id <= self._last_scene_frame_id):
+            return False
+
+        previous = self._last_scene_signature
+        self._last_scene_frame_id = frame_id
+        self._last_scene_signature = frame_signature
+        if not self._motion_expected or previous is None:
+            self._scene_stagnant_frames = 0
+            return False
+
+        if len(previous) != len(frame_signature) or not previous:
+            changed_fraction = 1.0
+        else:
+            changed_fraction = sum(
+                before != after for before, after in zip(previous, frame_signature)
+            ) / len(previous)
+        if changed_fraction < self.SCENE_CHANGE_FRACTION:
+            self._scene_stagnant_frames += 1
+        else:
+            self._scene_stagnant_frames = 0
+        return self._scene_stagnant_frames >= self.SCENE_STAGNATION_FRAMES
+
+    def _stagnant_endpoint(self) -> PickupVisionIntent:
+        self.phase = (PickupPhase.VERIFY_LEFT_ENDPOINT
+                      if self.phase is PickupPhase.SEARCH_LEFT
+                      else PickupPhase.VERIFY_RIGHT_ENDPOINT)
+        self._endpoint_frames = 0
+        self._endpoint_last_frame = None
+        return self._intent("stop", reason="camera_view_stagnant")
 
     def _enter_motion_phase(self, phase: PickupPhase, now: float, lateral_cm: float) -> None:
         self.phase = phase
         self._phase_started = now
         self._phase_origin_cm = lateral_cm
+        self._scene_stagnant_frames = 0
 
     def _guard_exhausted(self, guard: MotionGuard, now: float, lateral_cm: float) -> bool:
         return (
@@ -379,17 +433,30 @@ class PickupVisionController:
 
     def step(self, *, now: float, lateral_cm: float,
              target: BlockObservation | None, contact: bool = False,
-             stopped: bool = True, frame_id: int | None = None) -> PickupVisionIntent:
+             stopped: bool = True, frame_id: int | None = None,
+             frame_signature: bytes | None = None) -> PickupVisionIntent:
         if self._baseline_cm is None:
             self._baseline_cm = lateral_cm
             self._phase_started = now
             self._phase_origin_cm = lateral_cm
+
+        camera_stagnant = self._camera_view_stagnant(
+            frame_id=frame_id, frame_signature=frame_signature,
+        )
 
         if self.phase in {PickupPhase.SEARCH_RIGHT, PickupPhase.SEARCH_LEFT,
                           PickupPhase.RETURN_BASELINE,
                           PickupPhase.VERIFY_RIGHT_ENDPOINT,
                           PickupPhase.VERIFY_LEFT_ENDPOINT} and target is not None:
             return self._begin_candidate(target)
+
+        if camera_stagnant:
+            if self.phase in {PickupPhase.SEARCH_LEFT, PickupPhase.SEARCH_RIGHT}:
+                return self._stagnant_endpoint()
+            if self.phase is PickupPhase.ALIGNING:
+                return self._search_the_other_side(
+                    now, lateral_cm, reason="camera_view_stagnant",
+                )
 
         if self.phase is PickupPhase.SEARCH_RIGHT:
             if self._guard_exhausted(self.config.search_right, now, lateral_cm):

@@ -5,7 +5,8 @@ import pytest
 
 from run_route_v2 import (
     EncoderContactDetector, RouteRunner, RouteVisionRuntime, _MOTION_INTENTS, _close_route_arm,
-    _configure_camera, _forward_counts, _load_route_camera_config,
+    _configure_camera, _forward_counts, _frame_signature, _load_route_camera_config,
+    _orange_return_direction,
     _prepare_route_arm, main, vision_result_is_fresh, vision_task_for_state,
 )
 from route_v2.pickup_action import ActionPackageExecutor, CompiledActionStep
@@ -72,6 +73,7 @@ def _startup_runtime(result_holder, *, selected_at=0.0):
     )
     runtime._pickup_area = "purple"
     runtime._pickup_baseline_cm = 0.0
+    runtime._purple_target_slot = None
     runtime._return_controller = None
     return runtime
 
@@ -300,7 +302,9 @@ def test_visual_task_switch_stop_is_not_throttled_after_velocity_command():
     runner.tick(.06)
 
     assert runner.machine.state is RouteState.PURPLE_PRESCAN
-    assert chassis.commands == [("V", 0, 40, 0), ("STOP",)]
+    assert chassis.commands == [
+        ("V", 0, runner.config.junction_2_seek_line_vy, 0), ("STOP",),
+    ]
 
 
 class _VisionTestChassis:
@@ -319,6 +323,97 @@ class _VisionTestLine:
 
 def _visual_route_config():
     return load_route_v2_config(Path(__file__).parents[1] / "config" / "route_v2.yaml")
+
+
+def test_orange_line_reacquisition_uses_opposite_net_displacement():
+    assert _orange_return_direction(20.0) == -1
+    assert _orange_return_direction(-3.0) == 1
+    assert _orange_return_direction(0.0) == 0
+
+
+def test_camera_frame_signature_is_small_and_tracks_scene_changes():
+    np = pytest.importorskip("numpy")
+    image = np.full((48, 48, 3), 32, dtype=np.uint8)
+    signature = _frame_signature(image)
+    assert signature == bytes((2, 2, 2, 2))
+
+    image[0, 0] = (240, 240, 240)
+    assert _frame_signature(image) != signature
+
+
+def test_orange_runtime_and_restarted_search_both_start_left(monkeypatch):
+    import run_route_v2
+
+    selected_directions = []
+
+    class PickupController:
+        def __init__(self, *args, initial_search, **kwargs):
+            selected_directions.append(initial_search)
+
+    monkeypatch.setattr(run_route_v2, "PickupVisionController", PickupController)
+    runtime = RouteVisionRuntime.__new__(RouteVisionRuntime)
+    runtime.clock = lambda: 0.0
+    runtime.config = _visual_route_config()
+    runtime.vision = runtime.config.vision
+    runtime.worker = SimpleNamespace(select=lambda _task: 3)
+    runtime.frames = SimpleNamespace(snapshot=lambda **_kwargs: SimpleNamespace(image=None))
+    runtime._task = VisionTask.NONE
+    runtime._task_selected_at = 0.0
+    runtime._task_first_fresh_frame_id = None
+    runtime._task_ready = False
+    runtime._pickup_controller = None
+    runtime._pickup_area = None
+    runtime._pickup_baseline_cm = None
+    runtime._orange_search_origin_cm = None
+    runtime._purple_target_slot = None
+    runtime._purple_search_hint = None
+
+    runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 10.0)
+    runtime.restart_pickup_search(absolute_lateral_cm=12.0)
+
+    assert selected_directions == ["left", "left"]
+    assert runtime._orange_search_origin_cm == 10.0
+    assert runtime._pickup_baseline_cm == 12.0
+
+
+@pytest.mark.parametrize(
+    ("origin_cm", "lateral_cm", "direction"),
+    [(0.0, 20.0, -1), (0.0, -8.0, 1), (10.0, 32.0, -1)],
+)
+def test_orange_return_runtime_uses_cumulative_net_displacement(
+        origin_cm, lateral_cm, direction):
+    runtime = RouteVisionRuntime.__new__(RouteVisionRuntime)
+    runtime.start = lambda: None
+    runtime.clock = lambda: 0.0
+    runtime.config = _visual_route_config()
+    runtime.vision = runtime.config.vision
+    runtime.frames = SimpleNamespace(snapshot=lambda **_kwargs: SimpleNamespace(
+        fresh=True, frame_id=10, captured_at=1.0, age_s=0.0, image=None,
+    ))
+    runtime.capture = SimpleNamespace(status=lambda: SimpleNamespace(error=None))
+    runtime.worker = SimpleNamespace(
+        status=lambda: SimpleNamespace(error=None, running=True, frame_id=10),
+        result=lambda: None,
+        select=lambda _task: 2,
+    )
+    runtime._task = VisionTask.ORANGE_CLOSE
+    runtime._generation = 1
+    runtime._task_selected_at = 0.0
+    runtime._task_first_fresh_frame_id = None
+    runtime._task_ready = False
+    runtime._pickup_controller = None
+    runtime._pickup_area = "orange"
+    runtime._pickup_baseline_cm = 0.0
+    runtime._orange_search_origin_cm = origin_cm
+    runtime._return_controller = None
+
+    runtime.observe(
+        state=RouteState.PICKUP_2_RETURN_TO_LINE, now=1.0,
+        absolute_lateral_cm=lateral_cm, wall_contact=False, stopped=True,
+        sensor_mask=0xFF,
+    )
+
+    assert runtime._return_controller.one_way_direction == direction
 
 
 def test_stale_camera_stops_and_faults_while_tick_remains_live():

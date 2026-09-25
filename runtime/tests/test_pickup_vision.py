@@ -26,7 +26,7 @@ def target(x, *, frame, color=BlockColor.PURPLE, y=300):
     )
 
 
-def controller(area, *, initial_search="right"):
+def controller(area, *, initial_search=None):
     cfg = load_route_v2_config(ROOT / "config" / "route_v2.yaml")
     return PickupVisionController(
         area,
@@ -235,21 +235,20 @@ def test_search_speed_is_faster_than_alignment_and_candidate_stops_it():
     assert candidate.reason == "candidate_requires_stopped_confirmation"
 
 
-def test_orange_search_exhaustion_is_a_fault():
+def test_orange_left_then_right_exhaustion_reports_supply_empty():
     pickup = controller("orange")
-    pickup.step(now=0, lateral_cm=0, target=None)
-    right_endpoint = -(right_bound_cm("orange") + 1.0)
-    pickup.step(now=1, lateral_cm=right_endpoint, target=None)
-    for frame in (1, 2, 3):
-        pickup.step(now=1 + frame / 10, lateral_cm=right_endpoint,
-                    target=None, frame_id=frame)
-    pickup.step(now=2, lateral_cm=0, target=None)
+    assert pickup.step(now=0, lateral_cm=0, target=None).kind == "strafe_left"
     left_endpoint = left_bound_cm("orange") + 1.0
-    pickup.step(now=3, lateral_cm=left_endpoint, target=None)
-    for frame in (4, 5):
-        pickup.step(now=3 + frame / 10, lateral_cm=left_endpoint,
+    pickup.step(now=1, lateral_cm=left_endpoint, target=None)
+    for frame in (1, 2, 3):
+        pickup.step(now=1 + frame / 10, lateral_cm=left_endpoint,
                     target=None, frame_id=frame)
-    result = pickup.step(now=3.6, lateral_cm=left_endpoint, target=None, frame_id=6)
+    assert pickup.step(now=2, lateral_cm=0, target=None).kind == "strafe_right"
+    right_endpoint = -(right_bound_cm("orange") + 1.0)
+    pickup.step(now=3, lateral_cm=right_endpoint, target=None)
+    for frame in (4, 5, 6):
+        result = pickup.step(now=3 + frame / 10, lateral_cm=right_endpoint,
+                    target=None, frame_id=frame)
     assert result.kind == "no_target"
     assert result.result == "orange_exhausted"
 
@@ -417,7 +416,7 @@ def test_return_controller_uses_saved_absolute_baseline_then_bounded_reacquire()
     assert returning.step(now=2.1, absolute_lateral_cm=19, line_found=True).kind == "return_line_done"
 
 
-def test_orange_pickup_looks_left_first_and_that_ends_the_search_order():
+def test_orange_pickup_looks_left_first_then_right():
     """Operator, 2026-09-24: 「现在改成优先往左边找 左边没有 回到正中 往右边找
     并且之后的搜寻只往右边找」.
 
@@ -428,12 +427,96 @@ def test_orange_pickup_looks_left_first_and_that_ends_the_search_order():
     area = cfg.vision.pickup_areas["orange"]
     pickup = PickupVisionController(
         "orange", area, cfg.vision.block_profiles[area.profile],
-        frame_size=(1280, 720), initial_search="left",
+        frame_size=(1280, 720),
     )
 
     assert pickup._first_search is PickupPhase.SEARCH_LEFT
     assert pickup._second_search is PickupPhase.SEARCH_RIGHT
     assert pickup.step(now=0.0, lateral_cm=0.0, target=None).kind == "strafe_left"
+
+
+def test_orange_search_stagnation_ends_current_side_after_new_frames_only():
+    pickup = controller("orange", initial_search="left")
+    signature = bytes((32, 64, 96, 128))
+
+    first = pickup.step(now=0.0, lateral_cm=0.0, target=None,
+                        frame_id=1, frame_signature=signature)
+    assert first.kind == "strafe_left"
+
+    # Repeated observations of one camera frame must not count as a view plateau.
+    for _ in range(12):
+        result = pickup.step(now=0.1, lateral_cm=0.0, target=None,
+                             frame_id=1, frame_signature=signature)
+    assert result.kind == "strafe_left"
+
+    for frame in range(2, 30):
+        result = pickup.step(now=frame * 0.1, lateral_cm=0.0, target=None,
+                             frame_id=frame, frame_signature=signature)
+        if result.reason == "camera_view_stagnant":
+            break
+
+    assert result.kind == "stop"
+    assert result.phase is PickupPhase.VERIFY_LEFT_ENDPOINT
+    assert result.reason == "camera_view_stagnant"
+
+
+def test_orange_alignment_stagnation_abandons_unreachable_edge_target_for_other_side():
+    pickup = controller("orange", initial_search="left")
+    signature = bytes((16, 32, 48, 64))
+    edge_target = target(30, frame=1, color=BlockColor.ORANGE)
+
+    assert pickup.step(now=0.0, lateral_cm=0.0, target=edge_target,
+                       frame_id=1, frame_signature=signature).kind == "stop"
+    confirming = target(30, frame=2, color=BlockColor.ORANGE)
+    assert pickup.step(now=0.1, lateral_cm=0.0, target=confirming,
+                       frame_id=2, frame_signature=signature).kind == "stop"
+    confirming = target(30, frame=3, color=BlockColor.ORANGE)
+    assert pickup.step(now=0.2, lateral_cm=0.0, target=confirming,
+                       frame_id=3, frame_signature=signature).kind == "stop"
+    aligning_target = target(30, frame=4, color=BlockColor.ORANGE)
+    assert pickup.step(now=0.3, lateral_cm=0.0, target=aligning_target,
+                       frame_id=4, frame_signature=signature).kind == "align_left"
+
+    for frame in range(5, 30):
+        aligning_target = target(30, frame=frame, color=BlockColor.ORANGE)
+        result = pickup.step(now=frame * 0.1, lateral_cm=0.0,
+                             target=aligning_target, frame_id=frame,
+                             frame_signature=signature)
+        if result.reason == "camera_view_stagnant":
+            break
+
+    assert result.kind == "strafe_right"
+    assert result.phase is PickupPhase.SEARCH_RIGHT
+    assert result.reason == "camera_view_stagnant"
+
+    resumed = pickup.step(now=3.0, lateral_cm=0.0, target=None,
+                          frame_id=30, frame_signature=signature)
+    assert resumed.kind == "strafe_right"
+    assert resumed.reason == "search_right"
+
+
+def test_orange_search_stagnation_resets_when_camera_view_changes():
+    pickup = controller("orange", initial_search="left")
+    unchanged = bytes((16, 32, 48, 64))
+    changed = bytes((16, 32, 48, 80))
+
+    pickup.step(now=0.0, lateral_cm=0.0, target=None,
+                frame_id=1, frame_signature=unchanged)
+    for frame in range(2, 8):
+        pickup.step(now=frame * 0.1, lateral_cm=0.0, target=None,
+                    frame_id=frame, frame_signature=unchanged)
+    moving = pickup.step(now=0.8, lateral_cm=0.0, target=None,
+                         frame_id=8, frame_signature=changed)
+    for frame in range(9, 17):
+        moving = pickup.step(now=frame * 0.1, lateral_cm=0.0, target=None,
+                             frame_id=frame, frame_signature=unchanged)
+
+    assert moving.kind == "strafe_left"
+    assert moving.phase is PickupPhase.SEARCH_LEFT
+
+    stagnant = pickup.step(now=1.7, lateral_cm=0.0, target=None,
+                           frame_id=17, frame_signature=unchanged)
+    assert stagnant.reason == "camera_view_stagnant"
 
 
 def test_return_baseline_survives_the_sweep_overshoot_that_used_to_fault_it():
@@ -465,11 +548,8 @@ def test_return_baseline_survives_the_sweep_overshoot_that_used_to_fault_it():
     assert pickup.step(now=2.0, lateral_cm=-3.0, target=None).kind == "fault"
 
 
-def test_return_controller_one_way_hunts_one_way_until_its_own_bound():
-    """Operator, 2026-09-24: the orange hunt is ONE-WAY now -- its direction is
-    the opposite of the last lateral command the pickup issued, so the car goes
-    back the way it came instead of sweeping both ways and guessing.  Positive
-    strafes LEFT, so a -1 direction must drive RIGHT at the return speed."""
+def test_return_controller_one_way_hunts_until_its_own_bound():
+    """Positive strafes LEFT, so a -1 direction drives RIGHT at return speed."""
     returning = PickupReturnController(
         baseline_cm=0, tolerance_cm=1, speed=30, seek_max_cm=75, timeout_s=45,
         confirm_frames=2, one_way_direction=-1,

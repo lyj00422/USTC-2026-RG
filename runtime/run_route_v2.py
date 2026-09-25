@@ -45,6 +45,26 @@ class RouteSelectionError(ValueError):
     pass
 
 
+def _frame_signature(image) -> bytes | None:
+    """Create a compact, quantized signature used to detect a stalled view."""
+    if image is None or not hasattr(image, "shape") or len(image.shape) < 2:
+        return None
+    sampled = image[::24, ::24]
+    if len(sampled.shape) == 3:
+        channels = sampled[..., :3].astype("uint16")
+        sampled = channels.mean(axis=2).astype("uint8")
+    return bytes((sampled >> 4).astype("uint8").ravel())
+
+
+def _orange_return_direction(net_lateral_cm: float) -> int:
+    """Return opposite orange net movement; positive lateral is left."""
+    if net_lateral_cm > 0:
+        return -1
+    if net_lateral_cm < 0:
+        return 1
+    return 0
+
+
 def vision_task_for_state(state: RouteState) -> VisionTask:
     return {
         RouteState.JUNCTION_1_STRAFE_TO_TAG_2: VisionTask.TAG2,
@@ -126,24 +146,11 @@ class RouteVisionRuntime:
         self._pickup_controller: PickupVisionController | None = None
         self._pickup_area: str | None = None
         self._pickup_baseline_cm: float | None = None
+        self._orange_search_origin_cm: float | None = None
         # The purple block the route is going for, by the state machine's own
         # rule (loop_strategy.choose_purple_slot), decided at J3.  Kept here so
         # the return hunt's direction cannot disagree with the pickup.
         self._purple_target_slot: int | None = None
-        # Sign of the LAST lateral command the pickup issued on its way to a block
-        # (+1 = LEFT, the route's convention; -1 = RIGHT), latched across the
-        # whole pickup and NOT cleared by restart_pickup_search.
-        #
-        # Operator, 2026-09-24: 「通过找物块最后的一次速度反推 比如找到物块那一刻
-        # 前面的命令是向左 找线就一直向右找」.  The car drove that way to reach the
-        # block, so the line it left behind is on the other side: the post-grab hunt
-        # goes back the way it came, one way, instead of sweeping both ways and
-        # guessing.  This is the orange area's version of what the purple area gets
-        # from the prescan slot (see one_way_direction).
-        #
-        # 0 means "no lateral command was ever seen", and the hunt then falls back
-        # to the configured both-ways swing rather than inventing a direction.
-        self._last_pickup_lateral: int = 0
         self._return_controller: PickupReturnController | None = None
 
     def _detect_tag(self, task: VisionTask, image, *, frame_id: int,
@@ -232,14 +239,7 @@ class RouteVisionRuntime:
             # on region counts rather than a confirmed centre, and the old
             # `hint or "right"` default is what sent the first sweep right past a
             # left-hand block in run 20260922_214120.
-            # Which direction the first sweep goes.  The orange area looks RIGHT
-            # first, then LEFT -- the controller has exactly two sweeps and they are
-            # opposites, so the left sweep is the last one.
-            #
-            # Operator, 2026-09-24: 「抓取的逻辑改成优先右边」, after a round of
-            # 「优先往左边找」.  Both directions have now been tried on the car; this
-            # is the current answer.
-            first_look = "right"
+            first_look = "left" if area == "orange" else "right"
             if area == "purple":
                 first_look = ({1: "left", 2: "center", 3: "right"}.get(
                     self._purple_target_slot) or self._purple_search_hint or "right")
@@ -252,6 +252,9 @@ class RouteVisionRuntime:
             )
             self._pickup_area = area
             self._pickup_baseline_cm = absolute_lateral_cm
+            self._orange_search_origin_cm = (
+                absolute_lateral_cm if area == "orange" else None
+            )
             self._return_controller = None
         elif state not in {RouteState.PICKUP_RETURN_TO_LINE,
                            RouteState.PICKUP_2_RETURN_TO_LINE,
@@ -336,6 +339,7 @@ class RouteVisionRuntime:
         if result is not None:
             diagnostics["vision"]["result_frame_id"] = result.frame_id
 
+        frame_signature = _frame_signature(frame.image)
         search_phases = {
             PickupPhase.SEARCH_RIGHT,
             PickupPhase.RETURN_BASELINE,
@@ -352,7 +356,8 @@ class RouteVisionRuntime:
                 target=None,
                 contact=wall_contact,
                 stopped=stopped,
-                frame_id=None,
+                frame_id=frame.frame_id,
+                frame_signature=frame_signature,
             )
             diagnostics["vision"]["search_continued"] = True
             diagnostics["pickup_phase"] = pickup.phase.value
@@ -436,21 +441,12 @@ class RouteVisionRuntime:
                 pickup = self._pickup_controller.step(
                     now=now, lateral_cm=absolute_lateral_cm, target=target,
                     contact=wall_contact, stopped=stopped,
-                    frame_id=None if result is None else result.frame_id,
+                    frame_id=frame.frame_id,
+                    frame_signature=frame_signature,
                 )
                 diagnostics["pickup_phase"] = pickup.phase.value
                 diagnostics["pickup_reason"] = pickup.reason
                 diagnostics["pickup_result"] = pickup.result
-                # Latch the direction the car drives to REACH the block; the
-                # post-grab line hunt goes the opposite way (_last_pickup_lateral).
-                # Only the commands that move TOWARD a target count: strafe_left /
-                # strafe_right are the bounded search sweep and align_left /
-                # align_right are the final approach.  `return_baseline` is
-                # deliberately excluded -- it repositions the car to the search
-                # origin and says nothing about which side the block was on.
-                if (pickup.kind in {"strafe_left", "strafe_right",
-                                    "align_left", "align_right"} and pickup.speed):
-                    self._last_pickup_lateral = 1 if pickup.speed > 0 else -1
                 route_input = VisionRouteInput(
                     pickup_kind=pickup.kind,
                     pickup_speed=pickup.speed,
@@ -492,11 +488,12 @@ class RouteVisionRuntime:
                 one_way = 0
                 if self._pickup_area == "purple":
                     one_way = {1: -1, 3: 1}.get(self._purple_target_slot, 0)
-                elif self._pickup_area == "orange" and self._last_pickup_lateral:
-                    # The orange area has no prescan slot, so the direction comes
-                    # from the pickup itself: the hunt goes back the way the car
-                    # came (see _last_pickup_lateral).  Operator, 2026-09-24.
-                    one_way = -self._last_pickup_lateral
+                elif self._pickup_area == "orange":
+                    if self._orange_search_origin_cm is not None:
+                        net_lateral_cm = (
+                            absolute_lateral_cm - self._orange_search_origin_cm
+                        )
+                        one_way = _orange_return_direction(net_lateral_cm)
                 # The orange one-way hunt is bounded by the area's OWN measured
                 # safe strafe distance in that direction (75 cm both ways,
                 # independently measured -- see search_left/search_right).  Those
@@ -571,7 +568,7 @@ class RouteVisionRuntime:
             area_cfg,
             profile,
             frame_size=frame_size,
-            initial_search="right",
+            initial_search="left" if self._pickup_area == "orange" else "right",
         )
         if absolute_lateral_cm is not None:
             self._pickup_baseline_cm = absolute_lateral_cm
