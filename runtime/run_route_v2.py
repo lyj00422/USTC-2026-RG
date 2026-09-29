@@ -1175,6 +1175,9 @@ class RouteRunner:
                 action_result = action_executor.step(
                     now=now,
                     stop_acknowledged=self._last_intent_kind in {"stop", "wait"},
+                    # A package `D` move is closed-loop in the firmware, so the
+                    # executor waits for this tick's `DONE` rather than timing it.
+                    chassis_done=self._d_done,
                 )
                 visual_diagnostics["pickup_action"] = dict(action_result.metadata)
                 reset_finished = (
@@ -1249,7 +1252,16 @@ class RouteRunner:
         issued = None
         output = None
         action_owns_chassis = bool(action_result and action_result.chassis_active)
-        if action_result is not None and action_result.chassis_velocity is not None:
+        if action_result is not None and action_result.chassis_distance is not None:
+            forward_cm, right_cm, rotate_deg, speed = action_result.chassis_distance
+            self.chassis.run_distance(forward_cm, right_cm, rotate_deg, speed)
+            # Clear the DONE latch: the polling above ran *before* this send, so a
+            # `DONE` still sitting there belongs to the previous move and would
+            # otherwise complete this one on its first wait tick.
+            self._d_done = False
+            self._last_stop_at = -float("inf")
+            issued = f"ACTION D {forward_cm} {right_cm} {rotate_deg} {speed}"
+        elif action_result is not None and action_result.chassis_velocity is not None:
             vx, vy, wz = action_result.chassis_velocity
             self.chassis.set_velocity(vx, vy, wz)
             self._last_v_at = now

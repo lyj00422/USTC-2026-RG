@@ -22,6 +22,15 @@ class CompiledActionStep:
     wz: int = 0
     duration_s: float = 0.0
     enabled: bool | None = None
+    # `chassis_distance`: a firmware `D` move, which is closed-loop on its own
+    # encoders rather than timed here.  `forward_cm` is signed -- negative is
+    # reverse -- matching `travel_cm`'s sign, which is the only convention the
+    # codebase demonstrates (no package has used a negative D yet, so this is
+    # the one part of the D format that is reasoned rather than measured).
+    forward_cm: int = 0
+    right_cm: int = 0
+    rotate_deg: int = 0
+    speed: int = 0
 
 
 def load_action_package(
@@ -126,6 +135,25 @@ def compile_action(
         if command == "stop":
             index += 1
             continue
+        if command == "distance":
+            # Distance moves are what an automation package uses.  `velocity`
+            # plus a recorded stop is how the console captures a hand-driven
+            # nudge, and those durations are whatever the operator's thumb did
+            # (measured: four 0.06-0.18 s taps where a 4 cm approach belonged),
+            # so a package that means to travel a distance must say so.
+            forward_cm = _integer(raw.get("forward_cm"), f"steps[{index}].forward_cm", -400, 400)
+            right_cm = _integer(raw.get("right_cm", 0), f"steps[{index}].right_cm", -400, 400)
+            rotate_deg = _integer(raw.get("rotate_deg", 0), f"steps[{index}].rotate_deg", -360, 360)
+            speed = _integer(raw.get("speed"), f"steps[{index}].speed", 1, 100)
+            if forward_cm == 0 and right_cm == 0 and rotate_deg == 0:
+                raise ValueError(f"steps[{index}] distance command moves nowhere")
+            compiled.append(CompiledActionStep(
+                kind="chassis_distance",
+                forward_cm=forward_cm, right_cm=right_cm,
+                rotate_deg=rotate_deg, speed=speed,
+            ))
+            index += 1
+            continue
         if command != "velocity":
             raise ValueError(f"unsupported chassis command at index {index}: {command}")
         if index + 1 >= len(steps):
@@ -166,6 +194,11 @@ class PickupActionResult:
     chassis_stop: bool = False
     chassis_active: bool = False
     fault: str | None = None
+    # (forward_cm, right_cm, rotate_deg, speed) for a `D` move, emitted exactly
+    # once.  The firmware RESTARTS a `D` it is sent again -- unlike STOP, which is
+    # idempotent -- so a re-send mid-move drives the car further every time.  The
+    # runner must therefore send this on the tick it appears and never repeat it.
+    chassis_distance: tuple[int, int, int, int] | None = None
 
 
 class ActionPackageExecutor:
@@ -177,15 +210,21 @@ class ActionPackageExecutor:
         arm,
         *,
         ack_timeout_s: float = 1.0,
+        distance_timeout_s: float = 30.0,
         action_ref: str = "action_package:purple_pickup_v1",
     ) -> None:
         if not steps:
             raise ValueError("action package executor needs at least one step")
         if ack_timeout_s <= 0 or not action_ref:
             raise ValueError("ack_timeout_s and action_ref are required")
+        if distance_timeout_s <= 0:
+            raise ValueError("distance_timeout_s must be positive")
         self.steps = tuple(steps)
         self.arm = arm
         self.ack_timeout_s = float(ack_timeout_s)
+        # Generous: a 17 cm move at speed 20 is about 2 s, but a stall against a
+        # wall has to be allowed to finish rather than be cut short.
+        self.distance_timeout_s = float(distance_timeout_s)
         self.action_ref = action_ref
         self.reset()
 
@@ -198,6 +237,7 @@ class ActionPackageExecutor:
         self._ack_deadline: float | None = None
         self._wait_until: float | None = None
         self._motion_until: float | None = None
+        self._distance_deadline: float | None = None
         self._suction_enabled = False
 
     @property
@@ -209,6 +249,7 @@ class ActionPackageExecutor:
         *,
         chassis_velocity: tuple[int, int, int] | None = None,
         chassis_stop: bool = False,
+        chassis_distance: tuple[int, int, int, int] | None = None,
     ) -> PickupActionResult:
         if self._fault is not None:
             status = "fault"
@@ -230,15 +271,22 @@ class ActionPackageExecutor:
             metadata=metadata,
             chassis_velocity=chassis_velocity,
             chassis_stop=chassis_stop,
-            chassis_active=self._motion_until is not None and not chassis_stop,
+            # A D move owns the chassis for its whole flight, not just the tick
+            # that issues it: the route must not send its own STOP or queries
+            # into a closed-loop move.
+            chassis_active=(self._motion_until is not None or self._distance_deadline is not None)
+            and not chassis_stop,
             fault=self._fault,
+            chassis_distance=chassis_distance,
         )
 
     def _fail(self, message: str) -> PickupActionResult:
         self._fault = message
         return self._result(chassis_stop=True)
 
-    def step(self, *, now: float, stop_acknowledged: bool) -> PickupActionResult:
+    def step(
+        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False
+    ) -> PickupActionResult:
         if self._fault is not None or self._done:
             return self._result()
         if not self._started:
@@ -284,6 +332,22 @@ class ActionPackageExecutor:
                     self._done = True
                 return self._result(chassis_stop=True)
 
+            # A `D` move is closed-loop in the firmware: it reports `DONE` when
+            # the encoders say the distance is covered, which is not a duration
+            # we could guess.  Wait for that report, and on no account re-send --
+            # the firmware restarts a re-sent D, so the car would drive the move
+            # again from wherever it had got to.
+            if self._distance_deadline is not None:
+                if chassis_done:
+                    self._distance_deadline = None
+                    self._index += 1
+                    if self._index >= len(self.steps):
+                        self._done = True
+                    return self._result()
+                if now >= self._distance_deadline:
+                    return self._fail("chassis distance command reported no DONE")
+                return self._result()
+
             if self._index >= len(self.steps):
                 self._done = True
                 return self._result()
@@ -303,6 +367,16 @@ class ActionPackageExecutor:
                 self._motion_until = now + current.duration_s
                 return self._result(
                     chassis_velocity=(current.vx, current.vy, current.wz)
+                )
+            if current.kind == "chassis_distance":
+                # Issued once; `_distance_deadline` is what stops this branch
+                # being reached again on the next tick.
+                self._distance_deadline = now + self.distance_timeout_s
+                return self._result(
+                    chassis_distance=(
+                        current.forward_cm, current.right_cm,
+                        current.rotate_deg, current.speed,
+                    )
                 )
             return self._fail(f"unsupported compiled action step: {current.kind}")
         except Exception as exc:
@@ -338,14 +412,19 @@ class ActionCatalogExecutor:
     def reset(self) -> None:
         self._executor.reset()
 
-    def step(self, *, now: float, stop_acknowledged: bool) -> PickupActionResult:
-        result = self._executor.step(now=now, stop_acknowledged=stop_acknowledged)
+    def step(
+        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False
+    ) -> PickupActionResult:
+        result = self._executor.step(
+            now=now, stop_acknowledged=stop_acknowledged, chassis_done=chassis_done
+        )
         metadata = dict(result.metadata)
         metadata["selected_action"] = self.action
         return PickupActionResult(
             done=result.done, metadata=MappingProxyType(metadata),
             chassis_velocity=result.chassis_velocity, chassis_stop=result.chassis_stop,
             chassis_active=result.chassis_active, fault=result.fault,
+            chassis_distance=result.chassis_distance,
         )
 
 
@@ -373,7 +452,11 @@ class VisionOnlyPickupExecutor:
         self.action = action
         self.reset()
 
-    def step(self, *, now: float, stop_acknowledged: bool) -> PickupActionResult:
+    def step(
+        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False
+    ) -> PickupActionResult:
+        # `chassis_done` is accepted and ignored: this executor never issues a
+        # distance move, but the runner passes the same keyword to every executor.
         if self._started_at is None and stop_acknowledged:
             self._started_at = float(now)
         done = self._started_at is not None and now - self._started_at >= self.wait_s
@@ -398,7 +481,10 @@ class PlaceholderActionExecutor:
     def reset(self) -> None:
         self._started_at = None
 
-    def step(self, *, now: float, stop_acknowledged: bool) -> PickupActionResult:
+    def step(
+        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False
+    ) -> PickupActionResult:
+        # Accepted and ignored -- see VisionOnlyPickupExecutor.step.
         if self._started_at is None:
             if not stop_acknowledged:
                 return PickupActionResult(
