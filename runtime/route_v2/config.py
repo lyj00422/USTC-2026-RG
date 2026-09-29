@@ -95,6 +95,16 @@ class RouteV2Config:
     # keepalive on and confirm `d_done` still arrives and the yaw matches an
     # un-keepalived baseline.
     chassis_keepalive_s: float = 5.0
+    # When a live route still receives an RFCOMM I/O error, the route releases
+    # its exclusive lock so the Pi maintainer can rebuild the TTY, then retries
+    # the connection before declaring FAULT.
+    #
+    # Ported back from the 2026-09-28/29 worktree on 2026-09-29: the remote's
+    # current version predates it, so a single link drop -- and this track's
+    # JDY-31 drops every ~12-22 s -- ended the whole run with
+    # `FAULT_SAFE: chassis I/O failure: [Errno 5]`.
+    chassis_reconnect_timeout_s: float = 90.0
+    chassis_reconnect_retry_s: float = 1.0
     # Raised 35 -> 45 on 2026-09-15 (operator: "前进速度在pid的范围内安全提高点").
     #
     # "Within the PID's range" is the constraint, and it was measured rather than
@@ -849,6 +859,8 @@ def load_route_v2_config(
         # A non-positive interval would fire a keepalive every tick, turning the
         # D-wait into the 0.15 s query stream the exclusion exists to avoid.
         raise ValueError("chassis_keepalive_s must be positive")
+    if cfg.chassis_reconnect_timeout_s <= 0 or cfg.chassis_reconnect_retry_s <= 0:
+        raise ValueError("chassis reconnect timings must be positive")
     if cfg.pickup_arrived_distance_cm <= 0 or cfg.pickup_2_arrived_distance_cm <= 0:
         # A zero would end the leg on its first tick, before the car had moved.
         raise ValueError("pickup distance gates must be positive")

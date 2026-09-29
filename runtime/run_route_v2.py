@@ -798,6 +798,19 @@ _STOP_SETTLE_FRAMES = 10
 _STOP_SETTLE_INTERVAL_S = 0.2
 
 
+def _speed_reply_is_stopped(reply) -> bool:
+    """Return true only for a parsed SPD reply reporting every channel at zero.
+
+    The reconnect only hands a fresh chassis back to the route once this says
+    the wheels are stopped -- the half-sent command that broke the old link may
+    have reached the firmware, so the new link is never trusted blind.
+    """
+    if getattr(reply, "kind", None) != "speed":
+        return False
+    values = [int(value) for value in re.findall(r"[-+]?\d+", str(getattr(reply, "value", "")))]
+    return len(values) >= 8 and all(value == 0 for value in values[:8])
+
+
 def _state_by_name(name: str) -> RouteState:
     """A RouteState by name, with a clean error instead of a traceback.
 
@@ -874,7 +887,7 @@ class RouteRunner:
                  clock=None, sleeper=None, telemetry=None, tag_tracker=None,
                  stop_at: RouteState | None = None, vision_runtime=None,
                  purple_action=None, orange_action=None,
-                 build_action=None, evidence=None):
+                 build_action=None, evidence=None, recover_chassis=None):
         self.config = config
         self.chassis = chassis
         self.line_source = line_source
@@ -904,6 +917,9 @@ class RouteRunner:
         # Photo evidence for the orange "recognised -> stop three seconds"
         # decision.  None unless --capture-orange was passed.
         self._evidence = evidence
+        # Rebuilds the chassis link after a broken RFCOMM handle.  None on the
+        # injectable/dry-run paths, where an OSError must stay a hard FAULT.
+        self.recover_chassis = recover_chassis
         # --until: come to a controlled stop the moment the machine reaches this
         # state.  A field test of one leg needs an end that is a state, not a
         # stopwatch -- a timeout that fires late runs the car into the next leg.
@@ -1462,7 +1478,48 @@ class RouteRunner:
                 now = self.clock()
                 if now - started > timeout_s:
                     raise TimeoutError(f"no finish within {timeout_s:.0f}s")
-                self.tick(now)
+                try:
+                    self.tick(now)
+                except OSError as exc:
+                    # A broken RFCOMM handle is not the end of the run any more:
+                    # the link drops every ~12-22 s on this hardware, and one
+                    # drop used to abort the whole route with
+                    # `FAULT_SAFE: chassis I/O failure: [Errno 5]`.
+                    #
+                    # The timeout above is raised OUTSIDE this try on purpose:
+                    # TimeoutError is an OSError subclass, so catching it here
+                    # would turn a route overrun into a reconnect loop.
+                    if self.recover_chassis is None:
+                        raise
+                    # The failed command may have reached the old link, so the
+                    # recovery callback always confirms a stopped fresh device
+                    # before this loop retries the state-machine tick.
+                    self.chassis = self.recover_chassis(exc)
+                    # A D in flight across a link drop is NOT simply re-armed.
+                    #
+                    # `_issued_d` is the key that stops the same D being sent
+                    # twice; clearing it unconditionally made the state
+                    # machine's still-pending turn look like a new request, so
+                    # `D 0 0 90 80` went out again every link cycle and the
+                    # firmware -- which RESTARTS a D it is sent again, it does
+                    # not resume one -- turned the car another 90 degrees each
+                    # time.  Measured on run 20260928_173443: the car rotated
+                    # once per drop until it was killed.
+                    #
+                    # The encoder decides instead, and only if it has actually
+                    # SEEN the wheels move.  The known weak spot, stated rather
+                    # than hidden: if the link dies within the same tick as the
+                    # D, no sample can have landed, this reads "no motion" for a
+                    # car that did turn, and the D is sent again -- one extra 90
+                    # degrees.  That costs one turn; the unconditional re-arm it
+                    # replaces cost the whole run.
+                    if self._issued_d is not None and not self._d_saw_motion:
+                        self._issued_d = None
+                    self._d_pending_key = None
+                    self._d_done = False
+                    self._last_intent_kind = "stop"
+                    self._last_motion_query_at = -float("inf")
+                    continue
                 if self._reached_target:
                     return self.machine.state
                 self.sleeper(self.config.poll_period_s)
@@ -1952,6 +2009,72 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
     # Prime RFCOMM before any sensor/camera initialization can delay the first
     # chassis frame. This is a safe command and also establishes the TTY session.
     chassis.stop()
+
+    def recover_chassis(exc: OSError):
+        """Reconnect the route-owned chassis after a broken RFCOMM handle.
+
+        Ported back from the 2026-09-28/29 worktree on 2026-09-29.  Without it
+        a single link drop aborts the run with `[Errno 5]`, and this track's
+        JDY-31 drops the SPP session every ~12-22 s.
+        """
+        nonlocal transport, chassis
+        print(f"CHASSIS_RECONNECT link error: {exc}; releasing route lock", flush=True)
+        try:
+            transport.close()
+        except Exception:
+            pass
+        # The maintainer is intentionally forbidden from touching a live route
+        # TTY. Release the lock before every reconnect attempt, including retry
+        # failures, so it can run its rfcomm cleanup/connect cycle.
+        chassis_lock.release()
+        deadline = time.monotonic() + config.chassis_reconnect_timeout_s
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            candidate_transport = None
+            acquired = False
+            try:
+                _wait_for_chassis_device(
+                    runtime.chassis_device,
+                    timeout_s=min(config.chassis_reconnect_retry_s,
+                                  max(0.1, deadline - time.monotonic())),
+                )
+                chassis_lock.acquire()
+                acquired = True
+                candidate_transport = SerialTransport(
+                    runtime.chassis_device, runtime.chassis_baudrate, timeout_s=0.0
+                )
+                candidate = ChassisDevice(candidate_transport)
+                candidate.stop()
+                stop_deadline = time.monotonic() + min(5.0, max(0.5, deadline - time.monotonic()))
+                confirmed = False
+                while time.monotonic() < stop_deadline:
+                    candidate.request_speed()
+                    time.sleep(0.1)
+                    if any(_speed_reply_is_stopped(reply) for reply in candidate.poll()):
+                        confirmed = True
+                        break
+                if not confirmed:
+                    raise RuntimeError("reconnected chassis did not confirm zero speed")
+                transport = candidate_transport
+                chassis = candidate
+                print("CHASSIS_RECONNECT connected and STOP confirmed", flush=True)
+                return candidate
+            except Exception as reconnect_error:
+                last_error = reconnect_error
+                if candidate_transport is not None:
+                    try:
+                        candidate_transport.close()
+                    except Exception:
+                        pass
+                if acquired:
+                    chassis_lock.release()
+                time.sleep(min(config.chassis_reconnect_retry_s,
+                               max(0.05, deadline - time.monotonic())))
+        raise RuntimeError(
+            f"chassis reconnect failed within {config.chassis_reconnect_timeout_s:.0f}s: "
+            f"{last_error}"
+        ) from last_error
+
     line = LineSensorService(
         transport=runtime.line_transport,
         device=runtime.line_device,
@@ -2082,7 +2205,8 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
                             purple_action=purple_action,
                             orange_action=orange_action,
                             build_action=build_action,
-                            evidence=evidence)
+                            evidence=evidence,
+                            recover_chassis=recover_chassis)
         final_state = runner.run(timeout_s=float(getattr(args, "timeout_s", 420.0)))
         if stop_at is not None and final_state is stop_at:
             # Reaching the requested state IS the success condition here.

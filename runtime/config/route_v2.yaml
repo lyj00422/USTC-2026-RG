@@ -338,6 +338,11 @@ route_v2:
   #   就是为这个。**在有计时的腿段上依赖它之前**，先在台架上（轮子离地）跑一个
   #   转弯、开着保活，确认 `d_done` 照常到、转角和不保活的基线一致。
   chassis_keepalive_s: 5.0
+  # A live route releases LOCK_EX after a chassis I/O error so the RFCOMM
+  # maintainer can rebuild the TTY, then retries until this deadline.
+  # 2026-09-29 从 9-28 那版移植回来：远端当前版没有重连，一次掉链就整趟 FAULT。
+  chassis_reconnect_timeout_s: 90.0
+  chassis_reconnect_retry_s: 1.0
   # 2026-09-16 从 35 提到 45（操作员：「前进速度在pid的范围内安全提高点」）。
   #
   # "在 PID 的范围内"这条约束是**量出来的，不是猜的**。min250e 全跑 626 个

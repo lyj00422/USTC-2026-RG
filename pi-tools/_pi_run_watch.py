@@ -34,12 +34,37 @@ import paramiko
 HOST = os.environ.get("RG_PI_HOST", "172.20.10.11")
 USER = os.environ.get("RG_PI_USER", "pi")
 ROOT = "/home/pi/robogame-runtime"
-TELEMETRY = f"{ROOT}/logs/route_v2_telemetry.jsonl"
+
+# Resolved at startup to the newest route telemetry file on the Pi.
+#
+# This used to be a hardcoded `logs/route_v2_telemetry.jsonl`, which is only
+# correct when the launch happens to use that exact name.  A launch that passes
+# `--log-telemetry logs/route_v2_full_<ts>.jsonl` (the full-run convention) left
+# this watching a *previous, dead* run's file: on 2026-09-27 17:14 it reported
+# `WEDGE: PICKUP_3_TURN_RIGHT held 132s` while the live run was a full route
+# traversal ahead of that, still moving and with no FAULT.  A watcher that
+# silently reads the wrong file is worse than none -- the state it prints looks
+# authoritative.  Pick the newest file instead, and say which one it chose.
+TELEMETRY = os.environ.get("RG_PI_TELEMETRY", "")
 
 # A long stop in these is the design, not a wedge.
 STOP_IS_EXPECTED = ("BUILD_ACTION", "PICKUP_VISION_ONLY", "PICKUP_2_VISION_ONLY",
                     "PURPLE_PRESCAN")
 TAIL_BYTES = 400_000
+
+
+def resolve_telemetry(client):
+    """Newest logs/route_v2_*.jsonl on the Pi, unless RG_PI_TELEMETRY names one."""
+    global TELEMETRY
+    if TELEMETRY:
+        return TELEMETRY
+    _stdin, stdout, _err = client.exec_command(
+        f"ls -t {ROOT}/logs/route_v2_*.jsonl 2>/dev/null | head -1", timeout=30)
+    newest = stdout.read().decode().strip()
+    if not newest:
+        raise SystemExit("no route telemetry file on the Pi")
+    TELEMETRY = newest
+    return TELEMETRY
 
 
 def read_tail(client):
@@ -88,18 +113,47 @@ def main() -> int:
                              "caller can re-arm")
     args = parser.parse_args()
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username=USER, password=os.environ["RG_PI_PW"],
-                   timeout=15, allow_agent=False, look_for_keys=False)
+    def connect():
+        """Connect, riding out the WiFi blips this laptop's link to the Pi has.
+
+        Observed 2026-09-27: the link dropped for about a minute mid-run and the
+        first watch died on a bare `TimeoutError` from connect() before it had
+        reported anything, so the run went unwatched.  A dropped link is not a
+        route event and must not end the watch.
+        """
+        attempt = 0
+        while True:
+            try:
+                client = paramiko.SSHClient()
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                client.connect(HOST, username=USER, password=os.environ["RG_PI_PW"],
+                               timeout=15, allow_agent=False, look_for_keys=False)
+                return client
+            except Exception as exc:                      # noqa: BLE001 - any link error
+                attempt += 1
+                if attempt == 1:
+                    print(f"[watch] link not up yet ({exc}); retrying", flush=True)
+                time.sleep(min(5.0 * attempt, 30.0))
+
+    client = connect()
+    print(f"[watch] telemetry -> {resolve_telemetry(client)}", flush=True)
     deadline = time.time() + args.max_s
     last_state = None
     state_since = time.time()
     last_report = 0.0
     try:
         while True:
-            rows = read_tail(client)
-            alive = route_alive(client)
+            try:
+                rows = read_tail(client)
+                alive = route_alive(client)
+            except Exception as exc:                      # noqa: BLE001 - any link error
+                print(f"[watch] link dropped ({exc}); reconnecting", flush=True)
+                try:
+                    client.close()
+                except Exception:                         # noqa: BLE001
+                    pass
+                client = connect()
+                continue
             now = time.time()
 
             state = rows[-1].get("state") if rows else "?"
