@@ -1495,26 +1495,27 @@ class RouteRunner:
                     # recovery callback always confirms a stopped fresh device
                     # before this loop retries the state-machine tick.
                     self.chassis = self.recover_chassis(exc)
-                    # A D in flight across a link drop is NOT simply re-armed.
+                    # A D in flight across a link drop is NOT re-armed here.
                     #
                     # `_issued_d` is the key that stops the same D being sent
-                    # twice; clearing it unconditionally made the state
-                    # machine's still-pending turn look like a new request, so
-                    # `D 0 0 90 80` went out again every link cycle and the
-                    # firmware -- which RESTARTS a D it is sent again, it does
-                    # not resume one -- turned the car another 90 degrees each
-                    # time.  Measured on run 20260928_173443: the car rotated
-                    # once per drop until it was killed.
+                    # twice.  Clearing it makes the state machine's still-pending
+                    # turn look like a new request, so `D 0 0 90 80` goes out
+                    # again on every link cycle -- and the firmware RESTARTS a D
+                    # it is sent again, it does not resume one -- turning the car
+                    # another 90 degrees each time.  Measured on run
+                    # 20260928_173443: the car rotated once per drop until it was
+                    # killed.
                     #
-                    # The encoder decides instead, and only if it has actually
-                    # SEEN the wheels move.  The known weak spot, stated rather
-                    # than hidden: if the link dies within the same tick as the
-                    # D, no sample can have landed, this reads "no motion" for a
-                    # car that did turn, and the D is sent again -- one extra 90
-                    # degrees.  That costs one turn; the unconditional re-arm it
-                    # replaces cost the whole run.
-                    if self._issued_d is not None and not self._d_saw_motion:
-                        self._issued_d = None
+                    # The newer worktree cleared it only when an encoder witness
+                    # had proved the wheels never moved (`_d_saw_motion`, set
+                    # from an ENC sample).  THIS version has no such witness --
+                    # it decides `_d_done` from the reply alone (see tick) -- so
+                    # it cannot tell "the D was dropped" from "the D is running
+                    # on the firmware".  Re-arming on that guess is the spinning
+                    # bug above, so it does not guess: `_issued_d` is left set
+                    # and the turn is not re-sent.  The cost is at most one turn
+                    # that has to be retried by hand; the cost of guessing wrong
+                    # is the whole run.
                     self._d_pending_key = None
                     self._d_done = False
                     self._last_intent_kind = "stop"
