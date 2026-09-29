@@ -95,6 +95,27 @@ class RouteV2Config:
     # keepalive on and confirm `d_done` still arrives and the yaw matches an
     # un-keepalived baseline.
     chassis_keepalive_s: float = 5.0
+    # The link-level heartbeat (ChassisLink), which is a different mechanism from
+    # `chassis_keepalive_s` above even though the interval matches.
+    #
+    # `chassis_keepalive_s` is a D-wait branch inside the tick, so it only exists
+    # once the state machine is ticking.  The heartbeat belongs to the link and
+    # starts the moment the port opens, which is what covers the run's opening
+    # 20-40 s of line-sensor/camera/arm initialisation.  Measured over the 60
+    # archived runs of 2026-09-15..29: all 10 link drops fall inside the run's
+    # first 90 s, three of the longest at 23.0 / 25.4 / 27.2 s.
+    #
+    # Defaults are the control hub's proven pair (config/runtime.yaml
+    # `keepalive_s: 5` / `keepalive_quiet_s: 2`).  Set `enabled: false` to fall
+    # back to the pre-refactor behaviour for an A/B -- the reconnect diagnostic
+    # ("last byte on the wire N s before the error") then says whether the drop
+    # was really an idle teardown.
+    chassis_heartbeat_enabled: bool = True
+    chassis_heartbeat_s: float = 5.0
+    # The firmware answers only the FIRST command of a back-to-back burst, so a
+    # keepalive landing on top of a motion command can swallow that `V` -- the car
+    # then does not move and it looks exactly like a dead robot.
+    chassis_heartbeat_quiet_s: float = 2.0
     # When a live route still receives an RFCOMM I/O error, the route releases
     # its exclusive lock so the Pi maintainer can rebuild the TTY, then retries
     # the connection before declaring FAULT.
@@ -861,6 +882,17 @@ def load_route_v2_config(
         raise ValueError("chassis_keepalive_s must be positive")
     if cfg.chassis_reconnect_timeout_s <= 0 or cfg.chassis_reconnect_retry_s <= 0:
         raise ValueError("chassis reconnect timings must be positive")
+    if cfg.chassis_heartbeat_enabled:
+        if cfg.chassis_heartbeat_s <= 0:
+            # A non-positive period would beat on every pass of the heartbeat
+            # thread, which is the 0.15 s query stream this is meant to avoid.
+            raise ValueError("chassis_heartbeat_s must be positive")
+        if cfg.chassis_heartbeat_quiet_s < 0:
+            raise ValueError("chassis_heartbeat_quiet_s must not be negative")
+        if cfg.chassis_heartbeat_quiet_s >= cfg.chassis_heartbeat_s:
+            # Every beat would stand down for a command that never comes, so the
+            # link would idle out exactly as if the heartbeat were not there.
+            raise ValueError("chassis_heartbeat_quiet_s must be shorter than chassis_heartbeat_s")
     if cfg.pickup_arrived_distance_cm <= 0 or cfg.pickup_2_arrived_distance_cm <= 0:
         # A zero would end the leg on its first tick, before the car had moved.
         raise ValueError("pickup distance gates must be positive")

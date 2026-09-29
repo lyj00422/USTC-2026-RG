@@ -37,6 +37,7 @@ from route_v2.vision_worker import (
     CameraCaptureWorker, LatestFrameBuffer, VisionTask, VisionWorker,
 )
 from rg_runtime.blocks import ProfiledBlockDetector
+from rg_runtime.chassis_link import wait_for_chassis_device
 from rg_runtime.models import BlockColor
 from rg_runtime.tag_tracker import TagTracker, TagTrackingResult
 
@@ -796,19 +797,6 @@ class EncoderContactDetector:
 # route's own 200 ms cadence is the same effort _pi_halt.py makes by hand.
 _STOP_SETTLE_FRAMES = 10
 _STOP_SETTLE_INTERVAL_S = 0.2
-
-
-def _speed_reply_is_stopped(reply) -> bool:
-    """Return true only for a parsed SPD reply reporting every channel at zero.
-
-    The reconnect only hands a fresh chassis back to the route once this says
-    the wheels are stopped -- the half-sent command that broke the old link may
-    have reached the firmware, so the new link is never trusted blind.
-    """
-    if getattr(reply, "kind", None) != "speed":
-        return False
-    values = [int(value) for value in re.findall(r"[-+]?\d+", str(getattr(reply, "value", "")))]
-    return len(values) >= 8 and all(value == 0 for value in values[:8])
 
 
 def _state_by_name(name: str) -> RouteState:
@@ -1916,39 +1904,11 @@ def main(argv=None, *, config_path: str | Path = "config/route_v2.yaml") -> int:
         return 2
 
 
-def _wait_for_chassis_device(path: str, *, timeout_s: float = 40.0) -> None:
-    """Block until the RFCOMM node exists, then let the caller open it.
-
-    The maintainer service drops and rebuilds the node every 13-35 s whenever
-    the link is idle: JDY-31 hangs up after roughly 20 s of silence, and nothing
-    talks to it between runs (seen in the service log on 2026-09-14, and the
-    first hardware run of that session died with "could not open port
-    /dev/robogame-chassis: No such file or directory" without ever sending a
-    command).  Once the route is running it speaks every 250 ms and the link
-    holds, so only the opening needs to wait.
-
-    This must happen BEFORE the port lock is taken.  The maintainer only tests
-    the lock at the top of its loop, so a lock held while the node is missing
-    stops the one service that could rebuild it -- the deadlock that stranded
-    the robot earlier the same day.
-    """
-    if os.name != "posix":
-        # The chassis TTY and its maintainer service only exist on the Pi; on a
-        # Windows development host this would block for the full timeout and
-        # then fail a run that the tests deliberately drive with a fake chassis.
-        return
-    if os.path.exists(path):
-        return
-    print(f"waiting for {path} (the RFCOMM maintainer rebuilds it after the link idles out)")
-    deadline = time.monotonic() + timeout_s
-    while not os.path.exists(path):
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"{path} did not appear within {timeout_s:.0f}s; the RFCOMM maintainer is not "
-                "rebuilding it -- check systemctl status robogame-chassis-rfcomm"
-            )
-        time.sleep(0.5)
-    print(f"{path} is back")
+# Moved to rg_runtime.chassis_link, where the rest of the link's ownership lives.
+# Re-exported under the old private name because the Pi-side field launcher
+# (/home/pi/robogame-runtime/start_full_route.py, not tracked in this repo)
+# imports it as `from run_route_v2 import _wait_for_chassis_device`.
+_wait_for_chassis_device = wait_for_chassis_device
 
 
 def _prepare_route_arm(runtime, *, transport_factory=None):
@@ -1991,90 +1951,43 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
     """Open the existing runtime devices and run route v2 with fail-safe cleanup."""
     from control_hub.services.line_service import LineSensorService
     from rg_runtime.app_support import load_runtime_config
-    from rg_runtime.chassis_lock import ChassisPortLock
-    from rg_runtime.devices import ChassisDevice
-    from rg_runtime.transports import SerialTransport
+    from rg_runtime.chassis_link import ChassisLink
 
     runtime = load_runtime_config(args.runtime_config)
     # Load the exported action catalog before route movement.  Pickup windows
     # are embedded in the pickup packages; build packages intentionally have
     # no window and are gated by the build vision result in the state machine.
-    # Wait for the node BEFORE locking: see _wait_for_chassis_device.
-    _wait_for_chassis_device(runtime.chassis_device)
-    # Refuse to run while the hub (or another route run) owns the chassis port:
-    # two readers would steal each other's replies.
-    chassis_lock = ChassisPortLock()
-    chassis_lock.acquire()
-    transport = SerialTransport(runtime.chassis_device, runtime.chassis_baudrate, timeout_s=0.0)
-    chassis = ChassisDevice(transport)
-    # Prime RFCOMM before any sensor/camera initialization can delay the first
-    # chassis frame. This is a safe command and also establishes the TTY session.
-    chassis.stop()
+    # The link owns the port lock, the transport, the reconnect and -- critically
+    # -- the heartbeat, which starts HERE rather than at the first tick.
+    #
+    # The 20-40 s of line-sensor/camera/arm/action-catalogue initialisation that
+    # follows this call used to sit on an open port with nothing on the wire, and
+    # the JDY-31 drops an idle SPP session after 13-20 s.  Measured over the 60
+    # archived runs of 2026-09-15..29: every one of the 10 link drops falls inside
+    # the run's first 90 s, and the three longest (22.5 / 20.4 / 18.2 s) land at
+    # 23.0 / 25.4 / 27.2 s -- exactly where the first tick meets the chassis.
+    # The console never had this window because its keepalive is a dedicated loop
+    # that starts when the port opens.
+    chassis_link = ChassisLink(
+        runtime.chassis_device,
+        runtime.chassis_baudrate,
+        wait_for_device=_wait_for_chassis_device,
+        heartbeat_enabled=config.chassis_heartbeat_enabled,
+        heartbeat_s=config.chassis_heartbeat_s,
+        heartbeat_quiet_s=config.chassis_heartbeat_quiet_s,
+        recover_timeout_s=config.chassis_reconnect_timeout_s,
+        recover_retry_s=config.chassis_reconnect_retry_s,
+    )
+    # Opens the port (after waiting for the node), primes RFCOMM with a STOP, and
+    # starts the heartbeat thread.
+    chassis_link.open()
+    chassis = chassis_link
 
-    def recover_chassis(exc: OSError):
-        """Reconnect the route-owned chassis after a broken RFCOMM handle.
-
-        Ported back from the 2026-09-28/29 worktree on 2026-09-29.  Without it
-        a single link drop aborts the run with `[Errno 5]`, and this track's
-        JDY-31 drops the SPP session every ~12-22 s.
-        """
-        nonlocal transport, chassis
-        print(f"CHASSIS_RECONNECT link error: {exc}; releasing route lock", flush=True)
-        try:
-            transport.close()
-        except Exception:
-            pass
-        # The maintainer is intentionally forbidden from touching a live route
-        # TTY. Release the lock before every reconnect attempt, including retry
-        # failures, so it can run its rfcomm cleanup/connect cycle.
-        chassis_lock.release()
-        deadline = time.monotonic() + config.chassis_reconnect_timeout_s
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            candidate_transport = None
-            acquired = False
-            try:
-                _wait_for_chassis_device(
-                    runtime.chassis_device,
-                    timeout_s=min(config.chassis_reconnect_retry_s,
-                                  max(0.1, deadline - time.monotonic())),
-                )
-                chassis_lock.acquire()
-                acquired = True
-                candidate_transport = SerialTransport(
-                    runtime.chassis_device, runtime.chassis_baudrate, timeout_s=0.0
-                )
-                candidate = ChassisDevice(candidate_transport)
-                candidate.stop()
-                stop_deadline = time.monotonic() + min(5.0, max(0.5, deadline - time.monotonic()))
-                confirmed = False
-                while time.monotonic() < stop_deadline:
-                    candidate.request_speed()
-                    time.sleep(0.1)
-                    if any(_speed_reply_is_stopped(reply) for reply in candidate.poll()):
-                        confirmed = True
-                        break
-                if not confirmed:
-                    raise RuntimeError("reconnected chassis did not confirm zero speed")
-                transport = candidate_transport
-                chassis = candidate
-                print("CHASSIS_RECONNECT connected and STOP confirmed", flush=True)
-                return candidate
-            except Exception as reconnect_error:
-                last_error = reconnect_error
-                if candidate_transport is not None:
-                    try:
-                        candidate_transport.close()
-                    except Exception:
-                        pass
-                if acquired:
-                    chassis_lock.release()
-                time.sleep(min(config.chassis_reconnect_retry_s,
-                               max(0.05, deadline - time.monotonic())))
-        raise RuntimeError(
-            f"chassis reconnect failed within {config.chassis_reconnect_timeout_s:.0f}s: "
-            f"{last_error}"
-        ) from last_error
+    # The reconnect that used to live here as a closure is now ChassisLink.recover:
+    # it swaps the transport inside the same object the route already holds, so no
+    # nonlocal rebinding is needed.  It also reports how long the wire had been
+    # silent when the error arrived, which is what tells an idle teardown (13-20 s,
+    # fixable with a heartbeat) apart from the peer losing power (not fixable).
 
     line = LineSensorService(
         transport=runtime.line_transport,
@@ -2092,8 +2005,16 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
     )
     line.start()
     if not line.snapshot.connected:
+        # This raise happens before the try/finally below, so the cleanup there
+        # never runs.  Close the link explicitly: otherwise the port lock stays
+        # held (blocking the maintainer from rebuilding the TTY) and the heartbeat
+        # thread keeps beating on a port this run has given up on.
         try:
             chassis.stop()
+        except Exception:
+            pass
+        try:
+            chassis_link.close()
         except Exception:
             pass
         raise RuntimeError(f"line sensor unavailable: {line.snapshot.error or line.snapshot.state}")
@@ -2207,7 +2128,7 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
                             orange_action=orange_action,
                             build_action=build_action,
                             evidence=evidence,
-                            recover_chassis=recover_chassis)
+                            recover_chassis=chassis_link.recover)
         final_state = runner.run(timeout_s=float(getattr(args, "timeout_s", 420.0)))
         if stop_at is not None and final_state is stop_at:
             # Reaching the requested state IS the success condition here.
@@ -2226,10 +2147,11 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
             if telemetry_sink is not None:
                 telemetry_sink.close()
             try:
-                transport.close()
+                # Stops the heartbeat thread (bounded join), closes the transport
+                # and releases the port lock in that order.
+                chassis_link.close()
             except Exception:
                 pass
-            chassis_lock.release()
 
 
 if __name__ == "__main__":

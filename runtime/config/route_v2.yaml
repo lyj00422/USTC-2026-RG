@@ -338,6 +338,28 @@ route_v2:
   #   就是为这个。**在有计时的腿段上依赖它之前**，先在台架上（轮子离地）跑一个
   #   转弯、开着保活，确认 `d_done` 照常到、转角和不保活的基线一致。
   chassis_keepalive_s: 5.0
+  # ---- 链路级心跳（ChassisLink）---------------------------------------------
+  # 与上面 `chassis_keepalive_s` **不是同一个机制**，尽管数值相同：
+  #   * `chassis_keepalive_s` 是 tick 里的一个 D 等待分支 —— 只有状态机开始
+  #     转起来之后它才存在；
+  #   * 心跳属于链路本身，**端口打开那一刻就起线程**，与路线控制流无关。
+  #
+  # 2026-09-29 补上。原因：路线在开端口之后、第一个 tick 之前有 20~40 秒的
+  # 合法静默（线阵 startup_delay_s: 20 + 摄像头/机械臂/动作包初始化），而 JDY-31
+  # 空闲 13~20 秒就拆会话。存档 60 次运行实测：**10 次掉线全部落在运行前 90 秒
+  # 内**，三次最长的（22.5 / 20.4 / 18.2 秒）落在 23.0 / 25.4 / 27.2 秒 —— 正是
+  # 第一个 tick 第一次碰底盘的时刻。控制台从来没有这个问题，因为它的保活是
+  # server.py 的独立循环，端口一开就在跑。
+  #
+  # 默认值即控制台已验证的那一对（config/runtime.yaml keepalive_s / quiet_s）。
+  # 想退回重构前的行为做 A/B，把 enabled 改成 false；此时重连诊断会打印
+  # 「last byte on the wire N s before the error」，用 N 是否落在 13~20 秒
+  # 判断这次掉线到底是不是空闲拆链。
+  chassis_heartbeat_enabled: true
+  chassis_heartbeat_s: 5.0
+  # 固件只回答连发命令里的**第一条**，所以保活压在运动命令上会把那条 V 吞掉，
+  # 车不动，表现得和机器人死了一模一样。这条窗口就是为它留的。
+  chassis_heartbeat_quiet_s: 2.0
   # A live route releases LOCK_EX after a chassis I/O error so the RFCOMM
   # maintainer can rebuild the TTY, then retries until this deadline.
   # 2026-09-29 从 9-28 那版移植回来：远端当前版没有重连，一次掉链就整趟 FAULT。
