@@ -68,6 +68,103 @@ def _build_area_machine():
     return machine
 
 
+def _not_the_first_visit(machine):
+    """Mark the first arrival as spent.
+
+    Since 2026-09-29 the run's FIRST arrival at the build area builds where it
+    stands and never slides (operator: 「第一次搭建 到了搭建区直接执行搭建动作」).
+    Every test below is about what a LATER arrival does -- getting past buildings
+    that are already standing -- so it has to say so.  Without this the first
+    assertion in each of them sees BUILD_ACTION, because that is now the correct
+    answer for a first visit.
+    """
+    machine._build_first_visit_done = True
+    return machine
+
+
+def test_build_area_first_visit_builds_where_it_stands():
+    """Operator, 2026-09-29: 「第一次搭建 到了搭建区直接执行搭建动作」.
+
+    There is nothing standing to line up with on the first arrival, so the slide
+    has nothing to find -- and sliding would carry the car off the pose the 330 cm
+    leg was tuned to leave it in.  A blob in view must NOT change that: on this
+    visit there is no building to get past, whatever the detector reports.
+    """
+    machine = _build_area_machine()
+    machine.loop_context.record_purple()
+    machine.loop_context.record_orange()
+    machine.loop_context.record_orange()
+    occupied = VisionRouteInput(build_block_visible=True, build_center_error=-0.4)
+
+    # The entry tick is still held -- it carries the 330 cm leg's readings.
+    assert machine.step(0.0, vision=occupied).kind == "wait"
+
+    committed = machine.step(0.1, vision=occupied, absolute_lateral_cm=0.0)
+
+    assert committed.state is RouteState.BUILD_ACTION, "must build, not slide"
+    assert machine._build_first_visit_done is True
+
+    # NOT asserted: `_build_visit_origin_cm`.  The origin IS captured first (the
+    # code above the shortcut), but `_enter(BUILD_ACTION)` clears it in the same
+    # tick -- and that is true of the existing slide path too, not something this
+    # change introduces.  The upshot is that the origin has never actually been
+    # available to BUILD_BACK_TO_LINE; its line hunt has always run on
+    # `_line_reference_cm`.  Left as found: making the fallback real changes where
+    # the hunt starts, which is a field question, not a test one.
+
+
+def test_build_area_with_nothing_to_build_goes_back_for_blocks():
+    """An empty plan is a pickup round that came back empty, not a build.
+
+    Field, run 20260929_203524: BUILD_AREA committed anyway, `run_route_v2` then
+    substituted the string "RESET" for the missing action name, and when the reset
+    finished `apply_build_action` raised `unknown build action: RESET` -- faulting
+    the run after 77 states with nothing printed to its own stdout.
+    """
+    machine = _build_area_machine()          # nothing on board at all
+    away = VisionRouteInput(build_block_visible=False)
+
+    machine.step(0.0, vision=away)
+    going_back = machine.step(0.1, vision=away, absolute_lateral_cm=0.0)
+
+    assert going_back.state is RouteState.BUILD_BACK_TO_LINE, (
+        "nothing to build with means fetch, not build")
+    assert going_back.kind == "wait"
+
+
+def test_build_area_with_nothing_to_build_and_nothing_left_finishes():
+    """The same terminal test BUILD_ACTION's completion uses: nothing out there
+    AND nothing on board means the job is done.  Going back to hunt for blocks
+    that do not exist would loop forever."""
+    machine = _build_area_machine()
+    machine.loop_context.purple_absent = True
+    machine.loop_context.orange_absent = True
+    away = VisionRouteInput(build_block_visible=False)
+
+    machine.step(0.0, vision=away)
+    done = machine.step(0.1, vision=away, absolute_lateral_cm=0.0)
+
+    assert done.state is RouteState.FINISHED
+
+
+def test_build_area_first_visit_is_taken_only_once():
+    """The latch is the run's, not the visit's: leaving and coming back must take
+    the normal sliding path again."""
+    machine = _build_area_machine()
+    machine.loop_context.record_orange()
+    machine.loop_context.record_orange()
+    machine.step(0.1, vision=VisionRouteInput(build_block_visible=False),
+                 absolute_lateral_cm=0.0)
+    assert machine.state is RouteState.BUILD_ACTION
+
+    machine._enter(RouteState.BUILD_AREA, 1.0)
+    machine.step(1.1, vision=VisionRouteInput(build_block_visible=False),
+                 absolute_lateral_cm=0.0)
+
+    assert machine.state is RouteState.BUILD_AREA, (
+        "the second visit must plan against what is standing, not build blind")
+
+
 def test_build_area_entry_tick_holds_before_trusting_its_inputs():
     """The tick BUILD_AREA is entered is a fall-through from the 330 cm leg, so
     both inputs on it belong to the leg: the lateral odometer still reads the
@@ -89,7 +186,7 @@ def _cap_machine():
     machine.loop_context.record_purple()
     machine.loop_context.record_orange()
     machine._enter(RouteState.BUILD_AREA, 0.0)
-    return machine
+    return _not_the_first_visit(machine)
 
 
 def _place_machine():
@@ -99,7 +196,7 @@ def _place_machine():
     machine.loop_context.record_orange()
     machine.loop_context.record_orange()
     machine._enter(RouteState.BUILD_AREA, 0.0)
-    return machine
+    return _not_the_first_visit(machine)
 
 
 def test_build_area_cap_centres_on_the_blob_and_does_not_slide():
@@ -168,9 +265,61 @@ def test_build_area_place_skips_every_building():
 
     machine.step(0.2, vision=away, absolute_lateral_cm=5.0)
     machine.step(0.3, vision=away, absolute_lateral_cm=6.0)
-    committed = machine.step(0.4, vision=away, absolute_lateral_cm=7.0)
+    machine.step(0.4, vision=away, absolute_lateral_cm=7.0)
+
+    # Clear of the building at 7.0, but the visit is NOT over: operator,
+    # 2026-09-29, 「右移到没有方块的地方 长一点 目前两栋建筑之间有点近」.
+    committed = machine.step(0.5, vision=away, absolute_lateral_cm=20.0)
 
     assert committed.state is RouteState.BUILD_ACTION
+
+
+def test_build_area_place_keeps_going_after_the_view_clears():
+    """The gap between two structures is set by build_place_extra_right_cm, not by
+    where the detector happened to lose the last blob.
+
+    The car must not act on the tick the view clears, and it must still be sliding
+    one centimetre short of the configured distance.
+    """
+    machine = _place_machine()
+    machine.loop_context.building_count = 1
+    away = VisionRouteInput(build_block_visible=False)
+    extra = RouteV2Config().build_place_extra_right_cm
+
+    machine.step(0.1, vision=VisionRouteInput(build_block_visible=True),
+                 absolute_lateral_cm=0.0)
+    machine.step(0.2, vision=away, absolute_lateral_cm=5.0)
+    machine.step(0.3, vision=away, absolute_lateral_cm=6.0)
+
+    # View clears here: 7.0 is the clear pose, so 7.0 + extra is the commit pose.
+    cleared = machine.step(0.4, vision=away, absolute_lateral_cm=7.0)
+    assert cleared.state is RouteState.BUILD_AREA, "must not act the instant it clears"
+    assert cleared.kind == "strafe" and cleared.speed < 0, "must keep going right"
+
+    short = machine.step(0.5, vision=away, absolute_lateral_cm=7.0 + extra - 1.0)
+    assert short.state is RouteState.BUILD_AREA, "one cm short is still short"
+    assert short.kind == "strafe" and short.speed < 0
+
+    committed = machine.step(0.6, vision=away, absolute_lateral_cm=7.0 + extra)
+    assert committed.state is RouteState.BUILD_ACTION
+
+
+def test_build_area_place_does_not_move_without_an_odometer():
+    """The extra gap is a distance, so it needs an odometer like every other move
+    here.  A cleared view with no reading must hold, not slide blind."""
+    machine = _place_machine()
+    machine.loop_context.building_count = 1
+    away = VisionRouteInput(build_block_visible=False)
+
+    machine.step(0.1, vision=VisionRouteInput(build_block_visible=True),
+                 absolute_lateral_cm=0.0)
+    for index in range(3):
+        machine.step(0.2 + index * 0.1, vision=away, absolute_lateral_cm=5.0 + index)
+
+    held = machine.step(0.6, vision=away, absolute_lateral_cm=None)
+
+    assert held.state is RouteState.BUILD_AREA
+    assert held.kind == "stop"
 
 
 def test_build_area_holds_at_the_slide_ceiling_instead_of_acting():

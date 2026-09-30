@@ -19,6 +19,12 @@ foreach ($f in Get-ChildItem "$env:USERPROFILE\.claude\projects\C--Users-LJY-Des
 if ($counts.Count -eq 0) { throw 'no RG_PI_PW assignment found in session transcripts' }
 
 $env:RG_PI_PW = ($counts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1).Key
+# 2026-09-30 ~00:30: the router's SSID went away and the Pi fell back to the
+# iPhone hotspot (its priority-10 fallback), so this is back to the hotspot
+# lease.  The laptop has to be on that hotspot too -- see the pi-field-test
+# note about the hotspot dying with no client attached.
+#
+# Previous value, if the router comes back: 10.121.252.137.
 $env:RG_PI_HOST = '172.20.10.11'
 $env:RG_PI_USER = 'pi'
 

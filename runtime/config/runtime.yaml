@@ -40,6 +40,10 @@ arm:
   baudrate: 115200
   probe_timeout_ms: 2000
   action_timeout_ms: 45000
+  # 大臂串口的收发记录（一趟一条 JSONL，TX/RX 各记一行）。
+  # 2026-09-30 打开：为了查「大臂偶尔不动」。之前这个键不存在，
+  # 所以路线从没留下过大臂的任何记录，这个症状根本无从查起。
+  log_path: logs/arm_route.jsonl
 camera:
   config: config/camera_config.yaml
   output_dir: data/control_hub

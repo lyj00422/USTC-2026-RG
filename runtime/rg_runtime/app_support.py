@@ -28,6 +28,14 @@ class RuntimeConfig:
     camera_output_dir: str = "data/control_hub"
     arm_probe_timeout_ms: int = 2000
     arm_action_timeout_ms: int = 45000
+    # Where to record the arm's serial traffic.  `ArmSession` has always had the
+    # recorder (`arm_tools.py::_record`, one JSONL line per TX and per RX) but
+    # nothing ever passed it a path, so no route run has ever left a record of
+    # what was sent to the arm or what it answered -- which is why "大臂偶尔不动"
+    # could not be diagnosed from logs at all.
+    #
+    # None keeps it off; set `arm.log_path` in config/runtime.yaml to turn it on.
+    arm_log_path: str | None = None
     line_enabled: bool = True
     line_transport: str = "pigpio_soft_uart"
     # The vendor's Raspberry Pi example uses the hardware UART on GPIO14/15
@@ -74,6 +82,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         camera_output_dir=str(camera.get("output_dir", "data/control_hub")),
         arm_probe_timeout_ms=int(arm.get("probe_timeout_ms", 2000)),
         arm_action_timeout_ms=int(arm.get("action_timeout_ms", 45000)),
+        arm_log_path=(str(arm["log_path"]) if arm.get("log_path") else None),
         line_enabled=bool(line.get("enabled", True)),
         line_transport=str(line.get("transport", "pigpio_soft_uart")),
         line_device=str(line.get("device", "/dev/ttyAMA0")),

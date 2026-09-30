@@ -76,6 +76,18 @@ class BlockVisionProfile:
     bottom_y: ScalarRange | None = None
     near_field: Rect | None = None
     min_near_field_fill: float = 0.0
+    # A blob covering more than this fraction of the ROI is not a find -- it is the
+    # camera pressed against orange.  `1.0` disables the test, which is what every
+    # profile other than `build_occupancy` wants.
+    #
+    # This replaced an EDGE test (does the box run off the ROI's left/right side?),
+    # which measured nothing once the ROI was widened to 0.02..0.98: at that size
+    # any orange sheet touches an edge, so the answer was "clipped" for 1600 of the
+    # 1658 BUILD_AREA frames on 2026-09-30 and the cap slid to the ceiling.  The
+    # fill ratio is the same idea expressed in a way that does not move when the ROI
+    # moves.  Measured that run: the one usable silhouette filled 0.09 of the ROI,
+    # the runaway's did 0.99.
+    max_roi_fill: float = 1.0
     ycrcb_bands: tuple[ColorBand, ...] = ()
     centroid_hsv_bands: tuple[ColorBand, ...] = ()
     centroid_lab_bands: tuple[ColorBand, ...] = ()
@@ -116,6 +128,7 @@ class BlockVisionProfile:
                 near_field_value, f"{name}.near_field"
             ),
             min_near_field_fill=float(value.get("min_near_field_fill", 0)),
+            max_roi_fill=float(value.get("max_roi_fill", 1.0)),
             ycrcb_bands=ycrcb,
             centroid_hsv_bands=centroid_hsv,
             centroid_lab_bands=centroid_lab,
@@ -131,6 +144,8 @@ class BlockVisionProfile:
             raise ValueError(f"{name}.min_near_field_fill requires near_field")
         if result.near_field is not None and not 0 < result.min_near_field_fill <= 1:
             raise ValueError(f"{name}.min_near_field_fill must be in (0, 1]")
+        if not 0 < result.max_roi_fill <= 1:
+            raise ValueError(f"{name}.max_roi_fill must be in (0, 1]")
         if result.centroid_min_area_px < 0:
             raise ValueError(f"{name}.centroid_min_area_px must be non-negative")
         if (result.centroid_min_area_px > 0

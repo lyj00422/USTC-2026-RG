@@ -116,6 +116,43 @@ class RouteV2Config:
     # keepalive landing on top of a motion command can swallow that `V` -- the car
     # then does not move and it looks exactly like a dead robot.
     chassis_heartbeat_quiet_s: float = 2.0
+    # How often to re-assert a latched suction while no action package is
+    # running.  Operator, 2026-09-29: 「动作包中要严格做到吸的动作一发 就一直一直
+    # 吸 直到下一个放的命令」.
+    #
+    # The route only speaks to the arm while an action step waits for its ack,
+    # so carrying a block to the build area is minutes of line following with the
+    # arm completely silent -- the same exposure the chassis link had before
+    # `ChassisLink` owned its keepalive.  This is the arm's half of that fix.
+    arm_suction_hold_period_s: float = 2.0
+    # The two holds inside a PICKUP action.  Operator, 2026-09-29:
+    #   「对于紫色抓取 要求吸的动作执行之后 停顿1s」, then 「抓取动作中 吸之后 停顿1s
+    #    大臂抬起完成 停顿1s 再进行下一步动作」 -- so both, on every pickup.
+    #
+    # `pickup_suction_settle_s` runs after the arm ACKNOWLEDGES a SUCTION-ON step,
+    # so the vacuum can take hold of the block before the arm lifts it.
+    # `pickup_arm_lift_settle_s` runs once the 大臂 has finished RISING, so the
+    # block is not thrown by the next joint moving while the arm is still settling.
+    #
+    # Only the pickup catalogs get these.  The build packages keep 0.0, so their
+    # timing is bit-for-bit what it was.
+    pickup_suction_settle_s: float = 1.0
+    pickup_arm_lift_settle_s: float = 1.0
+    # The hold inside a BUILD action.  Operator, 2026-09-29: 「搭建动作中 大臂会
+    # 分步骤下移 所以在那样的情况下 大臂移动一次停顿1s」.
+    #
+    # Unlike the pickup hold above this one is not gated on a rise: a build walks
+    # the 大臂 DOWN to the layer in several servo steps with a chassis nudge
+    # between them, and the hold is what keeps the nudge from starting mid-descent.
+    #
+    # Cost, measured off the seven deployed packages (id-1 moves each): 0001 x7,
+    # 0002 x4, 0003 x6, 0004 x5, 0005 x11, 0006 x9, 0007 x4 -- and RESET, which
+    # shares this catalog, x1.  So the longest build grows by ~11 s.
+    build_arm_move_settle_s: float = 1.0
+    # Which servo is the 大臂.  The console's own axis labels are the only place
+    # the joints are named (control_hub/static/operate.html): 轴1 底座=0,
+    # 轴2 大臂=1, 轴3 小臂=2, 轴4 腕部=3, 轴5 夹具=4.
+    arm_lift_servo_id: int = 1
     # When a live route still receives an RFCOMM I/O error, the route releases
     # its exclusive lock so the Pi maintainer can rebuild the TTY, then retries
     # the connection before declaring FAULT.
@@ -152,6 +189,24 @@ class RouteV2Config:
     # is only the backstop.  The car has a bumper and is undamaged at any speed
     # (operator, 2026-09-15), so there was nothing left for the slow value to buy.
     pickup_speed: int = 80
+    # Speed for ONE leg only: `JUNCTION_PICKUP_3_TO_AREA`, the run from 取物区 1
+    # to the build area -- the state whose own docstring records the operator's
+    # 「倒车30cm后 右旋180 巡线D330cm 然后执行搭建动作」.  It follows
+    # PICKUP_2_RETURN (the ~28 cm reverse) and PICKUP_3_TURN_RIGHT (the 180).
+    #
+    # Operator, 2026-09-29: 「这个前进速度是50 但是这是取物区到搭建区的速度 然后
+    # 搭建区前往取物还是80」.  The reverse and the turn are explicitly NOT touched
+    # (「倒车不变 旋转不变 改前进速度」).
+    #
+    # It is a separate knob because `pickup_speed` is shared with two other legs
+    # -- JUNCTION_3_TO_PICKUP and JUNCTION_PICKUP_2_TO_AREA -- which the operator
+    # did not ask to slow.
+    #
+    # ⚠ The 50 was first put on `DIRECT_ORANGE_D330` (搭建区 -> 取物区 1) by
+    # misreading which of the two mirror-image legs 「取物区1」 named.  Both are
+    # 倒车 + 旋转 + 前进, which is what makes them easy to swap; the tie-breaker
+    # is the DIRECTION of travel, and the quote above settles it.
+    pickup_3_speed: int = 50
     # Line PID.  Raised on 2026-09-14 after the field measurements showed the old
     # values left the chassis with no usable steering authority: a one-probe
     # offset (error 0.143) with kp=8 produced vy=+-1, i.e. about 0.54 cm/s of
@@ -533,7 +588,19 @@ class RouteV2Config:
     junction_3_distance_cm: float = 210.0
     # A D said to be self-terminating that never returns DONE means the link or
     # the firmware is gone; without a ceiling the state would hang for ever.
-    turn_timeout_s: float = 15.0
+    #
+    # **45.0, was 15.0.**  Operator, 2026-09-30, watching JUNCTION_3_TURN_LEFT hold
+    # at the very start of a run: 「转弯超时？给我提高时间上限！」.  The run's own
+    # telemetry shows the 90 degree left turn was STILL SWEEPING the bar when the
+    # old ceiling fired -- mask walked 128 -> 192 -> ... -> 255 across the turn --
+    # and 14.65 s after `D 0 0 90 80` the state switched to its stop-and-hold exit
+    # and stayed there.  Stopping the commands mid-turn is unrecoverable: the state
+    # has no path back to "keep turning", so the car just stands there.
+    #
+    # A ceiling is still needed (a D that never returns DONE means the link or the
+    # firmware is gone), but it must exceed a real turn by a wide margin.  Erring
+    # long only costs time in a genuine fault; erring short wedges the route.
+    turn_timeout_s: float = 45.0
     # Re-finding the junction after the stop overshoots it.  Three debounce
     # frames plus braking at ~15 cm/s carry the car several centimetres past J1,
     # so the bar ends up on bare track reading 11111111 -- measured 2026-09-14
@@ -674,7 +741,11 @@ class RouteV2Config:
     # No ceiling is needed to END the leg now, because the distance gate above
     # does that.  But nothing bounds it on distance if the odometer dies: then
     # only the physical wall and the process-wide --timeout-s stop the car.
-    pickup_3_arrived_distance_cm: float = 330.0
+    # 300.0, was 330.0.  Operator, 2026-09-29: 「取物区1到搭建区 后退30cm 旋转 然后
+    # 前进300cm」.  This is the leg the operator has been shortening all evening --
+    # the 320 and the 310 before it landed on `direct_orange_distance_cm` by mistake,
+    # because the two legs are mirror images (see pickup_3_speed above).
+    pickup_3_arrived_distance_cm: float = 267.0
     # States where a lost line means "hold this course", not "stop".
     #
     # Operator, 2026-09-16: "最后的长直行 单独增加逻辑 即使丢线了 也继续直行",
@@ -748,6 +819,17 @@ class RouteV2Config:
     # ~33 cm of actual travel, not 70.
     pickup_2_return_reverse_cm: float = 30.0
     pickup_return_timeout_s: float = 60.0
+    # 320.0, was 330.0.  Operator, 2026-09-29: 「改成 倒车30cm 旋转 前进320cm」 --
+    # the reverse (30 cm) and the turn are unchanged, only this gate moved, and it
+    # is the DISTANCE halved off the same leg whose speed went to 50 above.
+    #
+    # This is the odometer gate for DIRECT_ORANGE_D330 only.  The build-area leg
+    # has its own, `pickup_3_arrived_distance_cm`, which is still 330.0 -- do not
+    # move the two together; they are different trips that happen to have started
+    # from the same number.
+    # Back to 330.0.  The 320 and the 310 that were tried here were meant for the
+    # OTHER mirror-image leg (`pickup_3_arrived_distance_cm` above); the operator
+    # never asked to shorten this one, and it is 搭建区 -> 取物区 1.
     direct_orange_distance_cm: float = 330.0
     # Backstop for the DIRECT_ORANGE_D330 leg, which is line following since
     # 2026-09-24 (it used to be a blind D 330, exiting on d_done).
@@ -793,11 +875,23 @@ class RouteV2Config:
     # 12 (see the orange search_right calibration: 80 cm at 4.03 cm/s), so 140 cm
     # is ~40 s of sliding.  The alternative, a tight ceiling, would turn a
     # detector that is merely slow into a wedged car.
-    build_slide_max_cm: float = 140.0
+    build_slide_max_cm: float = 300.0
     # Same class as the pickup areas' fine_speed (measured ~4 cm/s lateral).
     # Deliberately NOT the coarse/search speed: this is a positioning move that
     # has to stop on a vision reading, and stopping distance is what overshoots.
     build_slide_speed: int = 12
+    # How much further right a PLACEMENT visit goes after the view first goes
+    # clear, before it commits to the action.
+    #
+    # Without it the car acted the instant the last blob left the view, so the new
+    # structure ended up as close to the previous one as the detector allowed.
+    # Operator, 2026-09-29: 「右移到没有方块的地方 长一点 目前两栋建筑之间有点近
+    # 我需要你延长一点」, and 10 cm when asked for a number.
+    #
+    # Only the PLACEMENT path uses this.  A CAP centres on a blob with the vision
+    # instead -- there is no gap to set, the cap has to line up with the stack it
+    # goes on.
+    build_place_extra_right_cm: float = 10.0
     # How close to the window centre the build-area blob must be before the car
     # commits to a CAP, as a fraction of the frame width.  0.03 of 1280 px is
     # +-38 px, the same order as the purple pickup window's +-40 px.
@@ -810,12 +904,53 @@ class RouteV2Config:
     # Confirmed over consecutive frames like every other visual decision here: one
     # frame of a blob sliding through the window is not "centred".
     build_align_confirm_frames: int = 2
+    # ...and how many consecutive frames must read as a usable FIND before the car
+    # stops sliding and starts centring on it.
+    #
+    # Separate from `build_align_confirm_frames` above, which confirms the centring
+    # once it has started.  This one has to ride out detector flicker: on
+    # 2026-09-30 the one usable silhouette lasted ~0.3 s (~6 frames at 20 Hz) and
+    # the car acted on its first frame, lost it, and went back to sliding.
+    build_find_confirm_frames: int = 4
+    # Once a cap HAS a confirmed target, how many consecutive non-find frames it
+    # will hold through before giving the target up and searching on.
+    #
+    # Only consulted after `build_find_confirm_frames` frames agreed, so it can be
+    # generous.  Holding is the safe move: the car is standing where it found the
+    # stack, and the alternative -- sliding right -- is a move AWAY from it.  The
+    # whole point is that one frame of a flickering reading can no longer reverse
+    # the search direction.
+    build_target_lost_frames: int = 10
     # BUILD_BACK_TO_LINE may hunt this far PAST the distance the visit moved the
     # car sideways.  The visit knows that distance -- it is the net lateral offset
     # at the moment the action starts -- so the budget is that offset plus this
     # margin, not a fresh guess.  The margin covers overshoot and a line the car
     # stopped a little short of.
     build_line_seek_margin_cm: float = 20.0
+    # ...and this HARD-CAPS the hunt, per phase.  Operator, 2026-09-30, after
+    # watching the hunt give up centimetres from the line: 「搭建区的找线逻辑要修改
+    # 优先左移找线 上限200cm 找不到才右移找线」.
+    #
+    # The margin above is measured from "where the car was when the visit started",
+    # which is a good estimate only while the visit is a short one.  A build-area
+    # visit that slid 60-140 cm to get past the buildings starts its hunt with the
+    # line far outside |offset| + margin, so the old budget ran out almost at once
+    # and the car held STOP holding the line just out of reach.
+    build_line_seek_max_cm: float = 200.0
+    # A CAP's own hunt budget, measured from the pose where the car had finished
+    # passing the buildings it must skip (blobs_passed reached skip).
+    #
+    # `build_slide_max_cm` bounds the whole slide and is generous on purpose, but it
+    # is the PLACEMENT's number: a placement legitimately crosses the whole build
+    # area.  A cap does not -- it centres on the NEXT stack, which is tens of
+    # centimetres away.  On 2026-09-30 a cap slid 237 cm past the one frame that
+    # held a usable silhouette, ran to the 300 cm ceiling and latched there
+    # (`_build_slide_exhausted`), which reads on the field as a wedged car.
+    #
+    # Exceeding this does NOT build: it stops with `cap_seek_exhausted` set, so the
+    # hold is distinguishable in the log from the runaway it replaces.  Measured
+    # margin: the one usable find on 2026-09-30 came 18 cm after the last building.
+    build_cap_seek_max_cm: float = 60.0
     # Loop strategy placeholders.  Arm packages will replace the timed stop
     # once their action definitions are supplied.
     arm_placeholder_stop_s: float = 3.0
@@ -868,6 +1003,8 @@ def load_route_v2_config(
         raise ValueError("junction mask 0xFF means the car has left the track entirely")
     if cfg.forward_speed <= 0 or cfg.reverse_speed >= 0 or cfg.pickup_speed <= 0:
         raise ValueError("invalid V speeds")
+    if cfg.pickup_3_speed <= 0:
+        raise ValueError("pickup_3_speed must be positive")
     if cfg.turn_sign not in (-1, 1):
         # Single knob for an unmeasured convention: it flips every D rotation on
         # the route at once, so a value that is not a clean sign is a bug.
@@ -893,6 +1030,16 @@ def load_route_v2_config(
             # Every beat would stand down for a command that never comes, so the
             # link would idle out exactly as if the heartbeat were not there.
             raise ValueError("chassis_heartbeat_quiet_s must be shorter than chassis_heartbeat_s")
+    # 0 disables the hold and restores the pre-2026-09-29 behaviour, where the
+    # suction was asserted once by the grabbing package and never repeated.
+    if cfg.arm_suction_hold_period_s < 0:
+        raise ValueError("arm_suction_hold_period_s must not be negative")
+    if cfg.build_arm_move_settle_s < 0:
+        raise ValueError("build_arm_move_settle_s cannot be negative")
+    if cfg.pickup_suction_settle_s < 0 or cfg.pickup_arm_lift_settle_s < 0:
+        raise ValueError("pickup settle times must not be negative")
+    if not 0 <= cfg.arm_lift_servo_id <= 4:
+        raise ValueError("arm_lift_servo_id must be a servo id in 0..4")
     if cfg.pickup_arrived_distance_cm <= 0 or cfg.pickup_2_arrived_distance_cm <= 0:
         # A zero would end the leg on its first tick, before the car had moved.
         raise ValueError("pickup distance gates must be positive")
@@ -1007,14 +1154,29 @@ def load_route_v2_config(
         raise ValueError("build_slide_max_cm must be positive")
     if not 1 <= abs(cfg.build_slide_speed) <= 100:
         raise ValueError("build_slide_speed must be a non-zero lateral speed in 1..100")
+    if cfg.build_place_extra_right_cm < 0:
+        raise ValueError("build_place_extra_right_cm cannot be negative")
     if not 0 < cfg.build_align_tolerance <= 0.5:
         # A tolerance of half the frame or more is "anywhere in view", which is the
         # window the cap alignment exists to be tighter than.
         raise ValueError("build_align_tolerance must be within (0, 0.5]")
     if cfg.build_align_confirm_frames < 1:
         raise ValueError("build_align_confirm_frames must be at least 1")
+    if cfg.build_find_confirm_frames < 1:
+        raise ValueError("build_find_confirm_frames must be at least 1")
+    if cfg.build_target_lost_frames < 1:
+        raise ValueError("build_target_lost_frames must be at least 1")
     if cfg.build_line_seek_margin_cm < 0:
         raise ValueError("build_line_seek_margin_cm cannot be negative")
+    if cfg.build_line_seek_max_cm <= 0:
+        raise ValueError("build_line_seek_max_cm must be positive")
+    if cfg.build_cap_seek_max_cm <= 0:
+        raise ValueError("build_cap_seek_max_cm must be positive")
+    if cfg.build_cap_seek_max_cm > cfg.build_slide_max_cm:
+        # The cap's budget is a tightening of the slide ceiling, not a second one
+        # bolted alongside it: past build_slide_max_cm the slide latches anyway, so
+        # a larger cap budget would just be dead config pretending to be a bound.
+        raise ValueError("build_cap_seek_max_cm must not exceed build_slide_max_cm")
     if cfg.hold_course_on_line_loss:
         # Lazy import: state_machine imports this module at module level, so
         # importing it at the top of the file would be circular.  By the time a

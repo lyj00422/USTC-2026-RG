@@ -199,6 +199,19 @@ class PickupActionResult:
     # idempotent -- so a re-send mid-move drives the car further every time.  The
     # runner must therefore send this on the tick it appears and never repeat it.
     chassis_distance: tuple[int, int, int, int] | None = None
+    # The value of a `SUCTION` command issued this tick, or None when the step
+    # that ran was not a suction step.  The runner keeps the route-level latch
+    # from this, because that latch must outlive the executor:
+    # `ActionCatalogExecutor.set_action` builds a NEW `ActionPackageExecutor`
+    # per action, so a latch held inside one is silently forgotten at every
+    # action switch -- which is exactly when the car is carrying a block to the
+    # build area.
+    suction: bool | None = None
+    # Set for exactly one returned result when a `D` was accepted by the firmware
+    # and never reported DONE within `distance_timeout_s`.  This is NOT a fault:
+    # see the branch in `step()` for why.  Carries the command that timed out so
+    # the runner can name it.
+    distance_timeout: tuple[int, int, int, int] | None = None
 
 
 class ActionPackageExecutor:
@@ -210,7 +223,11 @@ class ActionPackageExecutor:
         arm,
         *,
         ack_timeout_s: float = 1.0,
-        distance_timeout_s: float = 30.0,
+        distance_timeout_s: float = 10.0,
+        suction_settle_s: float = 0.0,
+        arm_lift_settle_s: float = 0.0,
+        arm_move_settle_s: float = 0.0,
+        arm_lift_servo_id: int = 1,
         action_ref: str = "action_package:purple_pickup_v1",
     ) -> None:
         if not steps:
@@ -219,12 +236,78 @@ class ActionPackageExecutor:
             raise ValueError("ack_timeout_s and action_ref are required")
         if distance_timeout_s <= 0:
             raise ValueError("distance_timeout_s must be positive")
+        if suction_settle_s < 0 or arm_lift_settle_s < 0 or arm_move_settle_s < 0:
+            raise ValueError("settle times cannot be negative")
         self.steps = tuple(steps)
         self.arm = arm
         self.ack_timeout_s = float(ack_timeout_s)
-        # Generous: a 17 cm move at speed 20 is about 2 s, but a stall against a
-        # wall has to be allowed to finish rather than be cut short.
+        # 30.0 -> 5.0 on 2026-09-29, in two steps, and the second one is the one
+        # that matters.
+        #
+        # 30 s was cut after ONE lost `D` made the whole route look hung: the arm
+        # did its two opening servo moves, then nothing moved for 30 s while this
+        # deadline ran out, and the operator read that as 机械臂卡死.
+        #
+        # 2 s then turned out to be SHORTER THAN THE MOVES THEMSELVES, which is
+        # worse than it sounds.  Measured on the bench, wheels off the ground:
+        #
+        #     D 12 0 0 20   ->  +12.10 cm, DONE in 1.60 s
+        #     D -12 0 0 20  ->  -12.15 cm, DONE in 1.60 s
+        #
+        # i.e. about 0.133 s/cm at speed 20, and the packages ask for moves up to
+        # 17 cm -- 2.3 s, past a 2 s deadline.  The executor STOPped mid-move and
+        # reported "no DONE", which is exactly what the operator saw as 抓取的后退
+        # 总是执行没成功.  The loss counts agree: `D 16` (16 cm, the longest of the
+        # common ones) accounted for 26 of 40 recorded losses, while `D -12`
+        # (1.60 s, under the deadline) lost only 4, and `D 3` is short enough to
+        # have been lost for a different, rarer reason.
+        #
+        # 10 s on the operator's call (2026-09-29).  The bench figures above are
+        # for a car at rest on a stand; a loaded chassis on a low battery is
+        # slower, and 10 s gives the longest move better than 4x the measured
+        # time, so a move has to be genuinely lost -- not merely slow -- before
+        # this deadline matters.
+        #
+        # A move cut short is the expensive failure: the package advances anyway,
+        # so the car ends up short of where the step expected it, with nothing in
+        # the log except the "no DONE" line.  Waiting too long, by contrast, is
+        # visible and costs only time -- and with the deadline no longer below the
+        # moves' own duration, that wait should now be rare.
         self.distance_timeout_s = float(distance_timeout_s)
+        # Hold after the arm acknowledges a SUCTION-ON step, before the next step
+        # runs.  Operator, 2026-09-29, for the purple pickup: 「要求吸的动作执行
+        # 之后 停顿1s」 -- the vacuum needs a moment to take hold, and the recorded
+        # package goes straight from `SUCTION true` into the lift.
+        #
+        # 0.0 for every package except the one the runner hands a value to, so the
+        # orange picks behave exactly as before.
+        self.suction_settle_s = float(suction_settle_s)
+        # Hold after the 大臂 has finished RISING, before the next step runs.
+        # Operator, 2026-09-29: 「大臂抬起完成 停顿1s 再进行下一步动作」.
+        #
+        # 大臂 is servo id 1 -- taken from the console's own axis labels, which are
+        # the only place the joints are named (control_hub/static/operate.html:
+        # 轴1 底座=0, 轴2 大臂=1, 轴3 小臂=2, 轴4 腕部=3, 轴5 夹具=4).
+        #
+        # Only a RISE counts.  A reach DOWN to a block gets no hold -- the operator
+        # asked for the pause on the lift, and pausing on the way in as well would
+        # add a second dead second to every grab for nothing.
+        self.arm_lift_settle_s = float(arm_lift_settle_s)
+        # Hold after EVERY 大臂 move, whichever way it went -- the BUILD half of
+        # the same rule.  Operator, 2026-09-29: 「搭建动作中 大臂会分步骤下移 所以
+        # 在那样的情况下 大臂移动一次停顿1s」.
+        #
+        # `arm_lift_settle_s` above cannot express this: it is gated on a RISE,
+        # and the build packages spend their 大臂 moves going the other way.  The
+        # descent is what needs the hold here -- the recorder walks the arm down
+        # to a layer in more than one servo step with a chassis nudge in between
+        # (`build_base`: id1 1200 -> nudge -> id1 1000), and the nudge must not
+        # start while the arm is still moving.
+        #
+        # 0.0 for every package except the build catalog the runner hands a value
+        # to, so the pickup actions keep exactly the two holds they already had.
+        self.arm_move_settle_s = float(arm_move_settle_s)
+        self.arm_lift_servo_id = int(arm_lift_servo_id)
         self.action_ref = action_ref
         self.reset()
 
@@ -236,9 +319,30 @@ class ActionPackageExecutor:
         self._waiting_command: str | None = None
         self._ack_deadline: float | None = None
         self._wait_until: float | None = None
+        # A deliberate hold that is NOT a step: unlike `_wait_until`, letting this
+        # expire must not advance the index, so it is kept separately.  Both
+        # settles in the pickup actions (after the suction takes, and after the
+        # 大臂 finishes rising) run through here.
+        self._settle_until: float | None = None
+        # Decided when a servo stop is ISSUED, honoured when its own time_ms has
+        # elapsed -- the hold is "the arm has arrived", not "the command went out".
+        self._arm_lift_pending = False
+        # Same shape, for the build rule: true for one wait whenever the step
+        # that went out moved the 大臂 at all.  Only ever set when
+        # `arm_move_settle_s > 0`, so the expiry check needs no second guard.
+        self._arm_move_pending = False
+        # Last commanded position per servo, so "rising" can be told from
+        # "reaching down".  Package-scoped: cleared by reset().
+        self._last_servo_position: dict[int, int] = {}
         self._motion_until: float | None = None
         self._distance_deadline: float | None = None
         self._suction_enabled = False
+        # Set for exactly one returned result when a SUCTION step goes out, so
+        # the runner can keep the route-level latch.  Cleared by `_result`.
+        self._suction_command: bool | None = None
+        self._distance_timeout: tuple[int, int, int, int] | None = None
+        # The `D` currently in flight, kept so a timeout can name it.
+        self._last_distance_command: tuple[int, int, int, int] | None = None
 
     @property
     def suction_enabled(self) -> bool:
@@ -251,6 +355,13 @@ class ActionPackageExecutor:
         chassis_stop: bool = False,
         chassis_distance: tuple[int, int, int, int] | None = None,
     ) -> PickupActionResult:
+        # Take-and-clear: a suction command is reported on exactly one result.
+        # `step` returns one result per call, so nothing else can consume it.
+        suction_command = self._suction_command
+        self._suction_command = None
+        # Same take-and-clear for a lost `D`.
+        distance_timeout = self._distance_timeout
+        self._distance_timeout = None
         if self._fault is not None:
             status = "fault"
         elif self._done:
@@ -278,6 +389,8 @@ class ActionPackageExecutor:
             and not chassis_stop,
             fault=self._fault,
             chassis_distance=chassis_distance,
+            suction=suction_command,
+            distance_timeout=distance_timeout,
         )
 
     def _fail(self, message: str) -> PickupActionResult:
@@ -310,6 +423,12 @@ class ActionPackageExecutor:
                         self._index += 1
                         if self._index >= len(self.steps):
                             self._done = True
+                        if current.enabled and self.suction_settle_s > 0:
+                            # Suction ON and acknowledged: hold before the lift, so
+                            # the vacuum can take hold of the block.  The state is
+                            # already applied above, so every tick of the hold
+                            # reports the pump as on.
+                            self._settle_until = now + self.suction_settle_s
                     return self._result()
                 if self._ack_deadline is not None and now >= self._ack_deadline:
                     return self._fail(
@@ -317,11 +436,32 @@ class ActionPackageExecutor:
                     )
                 return self._result()
 
+            if self._settle_until is not None:
+                if now < self._settle_until:
+                    return self._result()
+                self._settle_until = None
+
             if self._wait_until is not None:
                 if now < self._wait_until:
                     return self._result()
                 self._wait_until = None
                 self._index += 1
+                if self._arm_lift_pending and self.arm_lift_settle_s > 0:
+                    # The 大臂 has just finished rising: hold before the next step.
+                    # The index has already moved past the servo stop, so nothing
+                    # is skipped when this expires.
+                    self._arm_lift_pending = False
+                    # A rise satisfies both rules; take the pickup hold once.
+                    self._arm_move_pending = False
+                    self._settle_until = now + self.arm_lift_settle_s
+                    return self._result()
+                if self._arm_move_pending:
+                    # Build rule: the 大臂 has finished moving, either way.  Note
+                    # there is no `time_ms` on top of this -- this expiry happens
+                    # after the servo's own travel time has already elapsed.
+                    self._arm_move_pending = False
+                    self._settle_until = now + self.arm_move_settle_s
+                    return self._result()
 
             if self._motion_until is not None:
                 if now < self._motion_until:
@@ -345,7 +485,27 @@ class ActionPackageExecutor:
                         self._done = True
                     return self._result()
                 if now >= self._distance_deadline:
-                    return self._fail("chassis distance command reported no DONE")
+                    # NOT a fault.  Operator, 2026-09-29: the car was NOT blocked
+                    # against anything, so a `D` the firmware accepted (it kept
+                    # reporting speed 20) and never reported DONE on means the
+                    # firmware lost the move.
+                    #
+                    # Faulting here killed two long field runs outright, both at
+                    # `PICK_ORANGE_LEFT` step 14 -- the same package, the same
+                    # step -- and the run that died was otherwise healthy and
+                    # 39-50 states deep.  A lost move is worth a STOP and a note,
+                    # not the whole run.
+                    #
+                    # STOP first: if the move IS still in flight somewhere, it
+                    # must not be left running while the arm does something else
+                    # on top of it.  STOP is idempotent, so this is free when the
+                    # move really was lost.
+                    self._distance_deadline = None
+                    self._distance_timeout = self._last_distance_command
+                    self._index += 1
+                    if self._index >= len(self.steps):
+                        self._done = True
+                    return self._result(chassis_stop=True)
                 return self._result()
 
             if self._index >= len(self.steps):
@@ -354,12 +514,35 @@ class ActionPackageExecutor:
 
             current = self.steps[self._index]
             if current.kind == "servo":
+                previous = self._last_servo_position.get(current.servo_id)
+                # "Rising" needs a baseline, and the only honest one is this
+                # package's own previous command to the same servo.  A first move
+                # on an id is therefore never a lift: with nothing to compare
+                # against, a hold would be a guess.  Every pickup package here
+                # reaches DOWN before it lifts, so the lift that matters is always
+                # a later move.
+                self._arm_lift_pending = (
+                    current.servo_id == self.arm_lift_servo_id
+                    and previous is not None
+                    and current.position > previous
+                )
+                # The build rule takes the FIRST 大臂 move too: `previous` is
+                # None there, which only disqualifies the rise test, not "the
+                # arm moved".  Every build package opens by walking the arm to
+                # the layer it is about to place on, and that approach is the
+                # one the operator is watching.
+                self._arm_move_pending = (
+                    self.arm_move_settle_s > 0
+                    and current.servo_id == self.arm_lift_servo_id
+                )
+                self._last_servo_position[current.servo_id] = current.position
                 self.arm.servo(current.servo_id, current.position, current.time_ms)
                 self._waiting_command = "SERVO"
                 self._ack_deadline = now + self.ack_timeout_s
                 return self._result()
             if current.kind == "suction":
                 self.arm.suction(current.enabled)
+                self._suction_command = bool(current.enabled)
                 self._waiting_command = "SUCTION"
                 self._ack_deadline = now + self.ack_timeout_s
                 return self._result()
@@ -372,12 +555,11 @@ class ActionPackageExecutor:
                 # Issued once; `_distance_deadline` is what stops this branch
                 # being reached again on the next tick.
                 self._distance_deadline = now + self.distance_timeout_s
-                return self._result(
-                    chassis_distance=(
-                        current.forward_cm, current.right_cm,
-                        current.rotate_deg, current.speed,
-                    )
+                self._last_distance_command = (
+                    current.forward_cm, current.right_cm,
+                    current.rotate_deg, current.speed,
                 )
+                return self._result(chassis_distance=self._last_distance_command)
             return self._fail(f"unsupported compiled action step: {current.kind}")
         except Exception as exc:
             return self._fail(f"pickup action failed: {exc}")
@@ -387,27 +569,39 @@ class ActionCatalogExecutor:
     """Select one compiled action from a catalog without blocking the route."""
 
     def __init__(self, actions: Mapping[str, tuple[CompiledActionStep, ...]], arm,
-                 *, ack_timeout_s: float = 1.0, action_ref_prefix: str = "action_package"):
+                 *, ack_timeout_s: float = 1.0, action_ref_prefix: str = "action_package",
+                 suction_settle_s: float = 0.0, arm_lift_settle_s: float = 0.0,
+                 arm_move_settle_s: float = 0.0, arm_lift_servo_id: int = 1):
         if not actions:
             raise ValueError("action catalog executor needs actions")
         self._actions = dict(actions)
         self.arm = arm
         self.ack_timeout_s = float(ack_timeout_s)
+        # Both carried across every `set_action`, so a settle configured for this
+        # catalog applies to each of its packages -- RESET included.
+        self.suction_settle_s = float(suction_settle_s)
+        self.arm_lift_settle_s = float(arm_lift_settle_s)
+        self.arm_move_settle_s = float(arm_move_settle_s)
+        self.arm_lift_servo_id = int(arm_lift_servo_id)
         self.action_ref_prefix = action_ref_prefix
         self.action = next(iter(self._actions))
-        self._executor = ActionPackageExecutor(
-            self._actions[self.action], arm, ack_timeout_s=ack_timeout_s,
-            action_ref=f"{action_ref_prefix}:{self.action}",
+        self._executor = self._build(self.action)
+
+    def _build(self, action: str) -> ActionPackageExecutor:
+        return ActionPackageExecutor(
+            self._actions[action], self.arm, ack_timeout_s=self.ack_timeout_s,
+            suction_settle_s=self.suction_settle_s,
+            arm_lift_settle_s=self.arm_lift_settle_s,
+            arm_move_settle_s=self.arm_move_settle_s,
+            arm_lift_servo_id=self.arm_lift_servo_id,
+            action_ref=f"{self.action_ref_prefix}:{action}",
         )
 
     def set_action(self, action: str) -> None:
         if action not in self._actions:
             raise ValueError(f"unknown action: {action}")
         self.action = action
-        self._executor = ActionPackageExecutor(
-            self._actions[action], self.arm, ack_timeout_s=self.ack_timeout_s,
-            action_ref=f"{self.action_ref_prefix}:{action}",
-        )
+        self._executor = self._build(action)
 
     def reset(self) -> None:
         self._executor.reset()
@@ -425,6 +619,8 @@ class ActionCatalogExecutor:
             chassis_velocity=result.chassis_velocity, chassis_stop=result.chassis_stop,
             chassis_active=result.chassis_active, fault=result.fault,
             chassis_distance=result.chassis_distance,
+            suction=result.suction,
+            distance_timeout=result.distance_timeout,
         )
 
 

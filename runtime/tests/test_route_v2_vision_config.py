@@ -242,18 +242,25 @@ def test_orange_close_profile_encodes_video_calibrated_color_and_geometry():
     assert (
         profile.roi.left, profile.roi.top, profile.roi.right, profile.roi.bottom
     ) == pytest.approx((0.08, 0.28, 0.92, 0.98))
-    # TRIAL, 2026-09-24: x shifted right by 0.02 (0.42/0.58 -> 0.44/0.60), centre
-    # 640 -> 665.6 px.  The operator asked for the grab to land further left on the
-    # block; under the alignment's sign convention (error = target_x - window centre,
-    # negative drives LEFT) moving the centre RIGHT makes the car settle further left
-    # relative to the block.  Revert by putting 0.42 / 0.58 back -- see the parameter's
-    # own comment in config/route_v2.yaml for the measurements behind it.
+    # 2026-09-29, third adjustment.  The sequence, so the arithmetic stays
+    # checkable:
+    #   0.42/0.58 (centre 640 px, the original)
+    #   -> 0.44/0.60 (centre 665.6)   "使得抓取左移一点", 2026-09-24
+    #   -> 0.57/0.67 (centre 793.6, width 205 -> 128 px)
+    #        "使得抓取位置左移到中心 现在是在边边 并收缩抓取窗口"
+    #   -> 0.55/0.65 (centre 768.0)   "使得抓取位置右移一点点（0.2）"
+    #        -- the 0.2 was confirmed as 0.02 in person, hence 768.0 and not
+    #        537.6.  Width stays 128 px.
+    # Under the alignment's sign convention (error = target_x - window centre,
+    # negative drives LEFT) moving the centre RIGHT makes the car settle further
+    # left relative to the block, so a grab that is too far LEFT is corrected by
+    # moving the centre LEFT -- which is what this last step does.
     assert (
         profile.capture_window.left,
         profile.capture_window.top,
         profile.capture_window.right,
         profile.capture_window.bottom,
-    ) == pytest.approx((0.44, 0.42, 0.60, 0.88))
+    ) == pytest.approx((0.55, 0.42, 0.65, 0.88))
     assert profile.aspect_ratio.minimum == 0.45
     assert profile.aspect_ratio.maximum == 2.2
     assert profile.height_px.minimum == 350

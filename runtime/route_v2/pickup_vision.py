@@ -220,6 +220,12 @@ class PickupVisionController:
         )
         self.phase = self._first_search
         self._first_search_complete = False
+        # The SECOND sweep's endpoint also returns to the baseline before the pickup
+        # ends.  Operator, 2026-09-30: 「往左没有方块 就回正 往右边找 右边没有了 回正」--
+        # both clauses end in 回正, and only the first one did.  The car used to
+        # finish the right sweep at its endpoint, ~36 cm off centre, and hand that
+        # offset to PICKUP_2_RETURN_TO_LINE.
+        self._return_is_final = False
         self._baseline_cm: float | None = None
         self._phase_started: float | None = None
         self._phase_origin_cm: float | None = None
@@ -470,6 +476,14 @@ class PickupVisionController:
         if self.phase is PickupPhase.RETURN_BASELINE:
             error = self._baseline_cm - lateral_cm
             if abs(error) <= self.config.return_tolerance_cm:
+                if self._return_is_final:
+                    # Both sweeps are done and the car is back on the baseline --
+                    # end the pickup from CENTRED, not from the last endpoint.
+                    self.phase = PickupPhase.NO_TARGET
+                    return self._intent(
+                        "no_target", reason="bounded_search_exhausted",
+                        result=("bypass_to_pickup_1" if self.area == "purple"
+                                else "orange_exhausted"))
                 self._enter_motion_phase(self._second_search, now, lateral_cm)
                 if self._second_search is PickupPhase.SEARCH_LEFT:
                     return self._intent("strafe_left", speed=abs(self.config.search_speed),
@@ -534,6 +548,18 @@ class PickupVisionController:
                 speed = abs(self.config.search_speed) if error > 0 else -abs(self.config.search_speed)
                 return self._intent("return_baseline", speed=speed,
                                     reason=f"{verified_search.value.lower()}_endpoint_clear")
+            # The SECOND sweep came up empty too.  Come back to the baseline before
+            # ending, so the car hands the next state a centred pose rather than
+            # wherever this sweep happened to stop.
+            if (not self._return_is_final
+                    and abs(lateral_cm - self._baseline_cm)
+                    > self.config.return_tolerance_cm):
+                self._return_is_final = True
+                self._enter_motion_phase(PickupPhase.RETURN_BASELINE, now, lateral_cm)
+                error = self._baseline_cm - lateral_cm
+                speed = abs(self.config.search_speed) if error > 0 else -abs(self.config.search_speed)
+                return self._intent("return_baseline", speed=speed,
+                                    reason="final_return_to_baseline")
             if self.area == "purple":
                 self.phase = PickupPhase.NO_TARGET
                 return self._intent("no_target", reason="bounded_search_exhausted",

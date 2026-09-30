@@ -459,17 +459,68 @@ class RouteVisionRuntime:
             # `accepted` by area, descending.
             observation = value.accepted[0] if value.accepted else None
             center_error = None
+            block_clipped = False
+            roi_fill = None
             if observation is not None:
                 snapshot = self.frames.snapshot(max_age_s=365 * 24 * 3600)
                 width = 1280 if snapshot.image is None else snapshot.image.shape[1]
+                height = 720 if snapshot.image is None else snapshot.image.shape[0]
                 window = self._build_profile.capture_window
                 window_center = (window.left + window.right) / 2
                 # Normalised like the pickup's own alignment error: negative means
                 # the blob sits left of centre, and the car then strafes LEFT.
                 center_error = observation.center_px[0] / width - window_center
+                # How much of the ROI the silhouette covers -- see
+                # BlockVisionProfile.max_roi_fill and
+                # VisionRouteInput.build_block_clipped.
+                #
+                # This used to be an EDGE test (does the box run off the ROI's
+                # left/right side?).  That measures nothing at the ROI's current
+                # 0.02..0.98 width: any orange sheet touches an edge, so it
+                # answered "clipped" for 1600 of the 1658 BUILD_AREA frames on
+                # 2026-09-30 and the cap slid 237 cm past the only usable
+                # silhouette to the 300 cm ceiling.  A fraction is the same idea
+                # with no dependence on where the ROI's edges sit, and it is
+                # exactly the operator's own word for it -- 「占满」.
+                roi = self._build_profile.roi
+                roi_area = (roi.right - roi.left) * width * (roi.bottom - roi.top) * height
+                if roi_area > 0:
+                    roi_fill = observation.area / roi_area
+                # Fill only.  An edge test was tried alongside it and removed again:
+                # the ROI now spans 0.02..0.98, so "the box touches the ROI edge"
+                # is true for any orange sheet and made the test stricter without
+                # making it more informative.  Operator, 2026-09-30: 「别这么严格」.
+                block_clipped = (roi_fill is not None
+                                 and roi_fill >= self._build_profile.max_roi_fill)
+            # Record what the detector actually answered.  These two values are the
+            # ONLY inputs that decide whether BUILD_AREA keeps sliding, and until
+            # 2026-09-30 neither was logged anywhere -- so a slide that ran 69 cm
+            # past a two-block stack and capped on bare floor could not be told
+            # apart from a detector that saw the stack and mis-centred it.
+            #
+            # `rejected` is the other half of the answer: the detector already
+            # computes WHY each candidate failed its geometry gates
+            # (`height_below_min`, `area_below_min`, `center_y_above_max`, ...), and
+            # a short two-block stack fails a different gate than a tall four-block
+            # one.  Four reasons is enough to name the gate without bloating the row.
+            diagnostics["build_vision"] = {
+                "visible": bool(value.accepted),
+                "n_accepted": len(value.accepted),
+                "n_rejected": len(value.rejected),
+                "center_error": (None if center_error is None
+                                 else round(center_error, 4)),
+                "center_px": (None if observation is None
+                              else round(observation.center_px[0], 1)),
+                "area": None if observation is None else int(observation.area),
+                "roi_fill": None if roi_fill is None else round(roi_fill, 4),
+                "box": None if observation is None else list(observation.bounding_box),
+                "clipped": block_clipped,
+                "rejected": [item.reason for item in value.rejected][:4],
+            }
             route_input = VisionRouteInput(
                 build_block_visible=bool(value.accepted),
                 build_center_error=center_error,
+                build_block_clipped=block_clipped,
                 camera_fault=camera_fault,
             )
 
@@ -875,10 +926,30 @@ class RouteRunner:
                  clock=None, sleeper=None, telemetry=None, tag_tracker=None,
                  stop_at: RouteState | None = None, vision_runtime=None,
                  purple_action=None, orange_action=None,
-                 build_action=None, evidence=None, recover_chassis=None):
+                 build_action=None, evidence=None, recover_chassis=None, arm=None,
+                 initial_buildings: int = 0, initial_capped: int = 0):
         self.config = config
         self.chassis = chassis
         self.line_source = line_source
+        # The arm is here for ONE job: holding a latched suction alive between
+        # action packages.  Nothing else in the tick may touch it -- see
+        # `_hold_suction`.
+        self.arm = arm
+        # Route-level suction latch.  It lives here, not in an executor, because
+        # `ActionCatalogExecutor.set_action` builds a NEW `ActionPackageExecutor`
+        # per action: a latch kept inside one is forgotten at every action
+        # switch, which is exactly when the car is carrying a block to the build
+        # area.  Operator, 2026-09-29: 「吸的动作一发 就一直一直吸 直到下一个放的
+        # 命令」.
+        self._suction_latch = False
+        self._suction_assert_at: float | None = None
+        self._suction_holds = 0
+        self._suction_hold_errors = 0
+        # How many action-package `D` moves the firmware accepted and never
+        # reported DONE on.  Non-fatal by design -- see the branch in
+        # `ActionPackageExecutor.step` -- but counted and printed, because a
+        # failure nobody can see is how this route has burned runs before.
+        self._distance_timeouts = 0
         self.camera = camera
         self.tag_detector = tag_detector
         self.tag_tracker = tag_tracker or TagTracker(target_id=2)
@@ -922,7 +993,17 @@ class RouteRunner:
         # telemetry at all, which made a crash impossible to diagnose after
         # the fact.
         self.telemetry = telemetry
-        self.machine = RouteV2StateMachine(config)
+        # Where the build area already stands.  `LoopContext` counts buildings
+        # and caps IN THIS PROCESS only, so a restart in the middle of a session
+        # wakes up believing the field is bare -- and then caps the wrong
+        # building or builds on empty floor.  Operator, 2026-09-30: 「你应该对准
+        # 第二栋建筑进行往上搭一橙一紫 / 但是你却移动到空地 执行往上搭建的动作」.
+        # These two arguments are how the operator tells it otherwise.
+        self.machine = RouteV2StateMachine(
+            config,
+            initial_buildings=max(0, int(initial_buildings)),
+            initial_capped=max(0, int(initial_capped)),
+        )
         # States whose line detection stutters while the car is on the line, so
         # a lost frame must not stop it.  Resolved once from the config's names
         # rather than compared as strings every tick.
@@ -1139,7 +1220,19 @@ class RouteRunner:
                 self._pickup_action_triggered = False
                 if self.machine.state is RouteState.BUILD_ACTION and hasattr(action_executor, "set_action"):
                     plan = self.machine.loop_context.build_plan
-                    target_action = plan[0] if plan else "RESET"
+                    # None, NOT "RESET", when there is no plan.  This value is
+                    # later handed to `apply_build_action`, which raises on
+                    # anything that is not a build action -- so the string "RESET"
+                    # here became `unknown build action: RESET` and faulted the run
+                    # (field, run 20260929_203524).  None is safe: the reset-phase
+                    # completion test already requires it to be non-None, so an
+                    # empty plan simply finishes the reset and reports the action
+                    # done, which is what BUILD_ACTION then acts on.
+                    #
+                    # BUILD_AREA no longer enters BUILD_ACTION with an empty plan
+                    # (see `_build_begin_action`); this is the second line of
+                    # defence for the same fault.
+                    target_action = plan[0] if plan else None
                     action_executor.set_action("RESET")
                     self._pending_pickup_action = target_action
                     self._pickup_reset_phase = True
@@ -1252,6 +1345,16 @@ class RouteRunner:
         issued = None
         output = None
         action_owns_chassis = bool(action_result and action_result.chassis_active)
+        if action_result is not None and action_result.suction is not None:
+            # The latch is what a package's SUCTION step MEANT, remembered past
+            # the end of the package that issued it.
+            self._suction_latch = action_result.suction
+            self._suction_assert_at = now
+        if action_result is not None and action_result.distance_timeout is not None:
+            self._distance_timeouts += 1
+            fwd, right, rot, speed = action_result.distance_timeout
+            print(f"ACTION D {fwd} {right} {rot} {speed} reported no DONE "
+                  f"({self._distance_timeouts}); stopping and continuing", flush=True)
         if action_result is not None and action_result.chassis_distance is not None:
             forward_cm, right_cm, rotate_deg, speed = action_result.chassis_distance
             self.chassis.run_distance(forward_cm, right_cm, rotate_deg, speed)
@@ -1437,6 +1540,11 @@ class RouteRunner:
                 self._last_motion_query_at = now
         self._last_tick = now
         self._last_intent_kind = "action_velocity" if action_owns_chassis else intent.kind
+        # Hold a latched grab alive.  Gated on `action_result is None` -- see
+        # `_hold_suction` for why it must never share a tick with the executor's
+        # own ack waits.
+        if action_result is None:
+            self._hold_suction(now)
         if self.telemetry is not None:
             tag2 = self._tag2_result
             tag2_payload = {
@@ -1464,12 +1572,58 @@ class RouteRunner:
                 "vy": output.vy if output is not None else None,
                 "wz": output.wz if output is not None else None,
                 "issued": issued,
+                # Whether a grab is latched, and how many times the hold has
+                # re-asserted it.  Without this a held block that dropped would
+                # leave no trace at all in the run's own record.
+                "suction_latch": self._suction_latch,
+                "suction_holds": self._suction_holds,
+                "distance_timeouts": self._distance_timeouts,
                 "tag2": tag2_payload,
+                # The build-area loop's own memory, which decides how far
+                # BUILD_AREA slides before it acts.  Operator, 2026-09-30, after
+                # watching it stack on bare floor instead of onto the second
+                # building: 「你应该对准第二栋建筑进行往上搭一橙一紫 / 但是你却移动
+                # 到空地 执行往上搭建的动作」.
+                #
+                # None of this was recorded before, so the question could only be
+                # guessed at: a cap slides past `cap_count` buildings and then
+                # aligns on the next uncapped one, a placement slides past
+                # `building_count` to the clear space beyond.  Which counter was
+                # used, and how many blobs the detector actually let it pass, is
+                # the whole difference between those two behaviours.
+                "loop": self._loop_payload(),
             }
             record.update(visual_diagnostics)
             record.pop("tag2_stable", None)
             self.telemetry(record)
         return intent
+
+    def _loop_payload(self) -> dict:
+        """The build-loop counters, read defensively.
+
+        Every one of these lives on the state machine and is None-able in
+        principle (the dry-run machine has no `_build_blobs_passed`); a missing
+        one must not be able to take a live run down, so they are read with
+        getattr and reported as None rather than raised.
+        """
+        context = getattr(self.machine, "loop_context", None)
+        plan = getattr(context, "build_plan", None) or ()
+        return {
+            "cap_count": getattr(context, "cap_count", None),
+            "building_count": getattr(context, "building_count", None),
+            "blobs_passed": getattr(self.machine, "_build_blobs_passed", None),
+            "slide_exhausted": getattr(self.machine, "_build_slide_exhausted", None),
+            "cap_seek_exhausted": getattr(self.machine, "_build_cap_seek_exhausted", None),
+            "find_frames": getattr(self.machine, "_build_find_frames", None),
+            "cap_acquired": getattr(self.machine, "_build_cap_acquired", None),
+            "target_lost": getattr(self.machine, "_build_target_lost_frames", None),
+            "plan": list(plan),
+            "purple": getattr(context, "purple_count", None),
+            "orange": getattr(context, "orange_count_actual", None),
+            "left_slot": getattr(context, "left_slot", None),
+            "right_slot": getattr(context, "right_slot", None),
+            "suction_slot": getattr(context, "suction_slot", None),
+        }
 
     def run(self, *, timeout_s: float = 420.0) -> RouteState:
         started = self.clock()
@@ -1551,6 +1705,54 @@ class RouteRunner:
                     self.camera.release()
                 except Exception:
                     pass
+
+    def _hold_suction(self, now: float) -> None:
+        """Re-assert a latched suction while no action package is running.
+
+        Operator, 2026-09-29: 「动作包中要严格做到吸的动作一发 就一直一直吸 直到下一
+        个放的命令」.  The route only speaks to the arm inside
+        `ActionPackageExecutor.step`, and only while a step waits for its ack.
+        So the moment a grabbing package finishes, the arm goes completely
+        silent -- and `orange_hold` deliberately ends with the block still on the
+        cup, meaning the car then carries it through line following, three
+        turns and several hundred centimetres of travel with nothing holding the
+        grab but whatever the arm decided to do on its own.  Nothing reads the
+        suction back either, so a drop is invisible.
+
+        This is the arm's half of the same fix `ChassisLink` made for the
+        chassis: an idle peer needs to be kept alive, not assumed stable.
+
+        Runs ONLY when `action_result is None`, i.e. when no package is mid-step.
+        That is load-bearing: the executor completes a SUCTION step by matching
+        an ack whose `command` is `SUCTION`, so an ack from a hold landing during
+        a step's wait could complete that step.  For a `true` step that is
+        harmless, but for a RELEASE it would advance past a `SUCTION false` that
+        never reached the firmware -- a silently skipped release, which is worse
+        than the drop this exists to prevent.  Keeping the two off the same tick
+        removes the possibility rather than trying to detect it.
+
+        `poll()` first, so the previous hold's ack is drained here rather than
+        being left for an action to find.
+        """
+        period = self.config.arm_suction_hold_period_s
+        if self.arm is None or period <= 0 or not self._suction_latch:
+            return
+        if self._suction_assert_at is not None and now - self._suction_assert_at < period:
+            return
+        self._suction_assert_at = now
+        try:
+            self.arm.poll()
+            self.arm.suction(True)
+        except Exception as exc:  # noqa: BLE001 - a hold must never fault the route
+            # The arm reports READY only between actions, and a hold can land in
+            # a gap.  Skip this beat and try again on the next one; the package
+            # that eventually releases the grab re-asserts the real state.
+            self._suction_hold_errors += 1
+            if self._suction_hold_errors in (1, 10) or self._suction_hold_errors % 100 == 0:
+                print(f"suction hold skipped ({self._suction_hold_errors}): {exc}",
+                      flush=True)
+            return
+        self._suction_holds += 1
 
     def _command_stop(self, now: float) -> str | None:
         """Send STOP, and keep sending it for as long as the route stays stopped.
@@ -1821,6 +2023,18 @@ def main(argv=None, *, config_path: str | Path = "config/route_v2.yaml") -> int:
     parser = argparse.ArgumentParser(description="RoboGame route v2")
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    # What is already standing in the build area when this process starts.
+    # `LoopContext` counts buildings and caps in-process only, so a run that
+    # begins mid-session has an empty memory while the earlier runs' buildings
+    # are still on the field -- and then caps the wrong one, or builds on bare
+    # floor.  Both default to 0, which is the behaviour without these flags.
+    parser.add_argument("--buildings", type=int, default=0,
+                        help="structures already standing in the build area "
+                             "(default 0).  A CAP slides past --capped of them, "
+                             "a PLACEMENT past --buildings")
+    parser.add_argument("--capped", type=int, default=0,
+                        help="of those, how many already carry a purple cap "
+                             "(default 0)")
     parser.add_argument("--only")
     parser.add_argument("--from", dest="start")
     parser.add_argument("--to", dest="end")
@@ -1932,7 +2146,11 @@ def _prepare_route_arm(runtime, *, transport_factory=None):
 
     factory = transport_factory or SerialTransport
     transport = factory(runtime.arm_device, runtime.arm_baudrate, timeout_s=0.0)
-    session = ArmSession(ArmDevice(transport), transport)
+    # Every ARM,... line out and every reply in, when runtime.yaml asks for it.
+    # Off by default (`arm_log_path` None), so a config without the key behaves
+    # exactly as before.
+    session = ArmSession(ArmDevice(transport), transport,
+                         log_path=getattr(runtime, "arm_log_path", None))
     timeout_s = runtime.arm_probe_timeout_ms / 1000.0
     try:
         session.safe_probe(timeout_s)
@@ -2067,10 +2285,28 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
             )
             for role, package in catalog.items()
         }
+        # The two pickup holds go to BOTH pickup catalogs and to nothing else.
+        # Operator, 2026-09-29: 「抓取动作中 吸之后 停顿1s 大臂抬起完成 停顿1s 再
+        # 进行下一步动作」.
+        pickup_settles = {
+            "suction_settle_s": config.pickup_suction_settle_s,
+            "arm_lift_settle_s": config.pickup_arm_lift_settle_s,
+            "arm_lift_servo_id": config.arm_lift_servo_id,
+        }
+        # The build hold is the opposite half of the same rule and goes to the
+        # build catalog only.  Operator, 2026-09-29: 「搭建动作中 大臂会分步骤下移
+        # 所以在那样的情况下 大臂移动一次停顿1s」.  `suction_settle_s` stays 0.0
+        # here -- the operator asked for it on the picks, and adding a dead second
+        # to every build suction would not be that.
+        build_settles = {
+            "arm_move_settle_s": config.build_arm_move_settle_s,
+            "arm_lift_servo_id": config.arm_lift_servo_id,
+        }
         purple_action = ActionCatalogExecutor(
             {"RESET": compiled["reset"], "PICK_PURPLE": compiled["purple_pickup"]},
             arm_session,
             action_ref_prefix="arm",
+            **pickup_settles,
         )
         orange_action = ActionCatalogExecutor(
             {
@@ -2081,6 +2317,7 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
             },
             arm_session,
             action_ref_prefix="arm",
+            **pickup_settles,
         )
         build_action = ActionCatalogExecutor(
             {
@@ -2095,6 +2332,7 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
             },
             arm_session,
             action_ref_prefix="arm",
+            **build_settles,
         )
         import cv2
         from rg_runtime.apriltag import AprilTagDetector
@@ -2140,7 +2378,10 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
                             orange_action=orange_action,
                             build_action=build_action,
                             evidence=evidence,
-                            recover_chassis=chassis_link.recover)
+                            recover_chassis=chassis_link.recover,
+                            arm=arm_session,
+                            initial_buildings=getattr(args, "buildings", 0) or 0,
+                            initial_capped=getattr(args, "capped", 0) or 0)
         final_state = runner.run(timeout_s=float(getattr(args, "timeout_s", 420.0)))
         if stop_at is not None and final_state is stop_at:
             # Reaching the requested state IS the success condition here.

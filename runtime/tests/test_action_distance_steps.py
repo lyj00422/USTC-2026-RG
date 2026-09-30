@@ -69,7 +69,12 @@ def test_a_distance_step_that_moves_nowhere_is_rejected():
 def test_distance_is_issued_once_and_the_executor_waits_for_done():
     steps = compile_pkg([distance(-17)])
     arm = FakeArm()
-    ex = ActionPackageExecutor(steps, arm)
+    # The timeout is pinned rather than defaulted: this test is about the
+    # WAIT-for-DONE contract (200 ticks = 10 s of waiting), and the production
+    # default was cut from 30 s to 2 s on 2026-09-29.  Left defaulted, the loop
+    # below would outlive it and this would silently become a test of the timeout
+    # instead.
+    ex = ActionPackageExecutor(steps, arm, distance_timeout_s=30.0)
 
     first = ex.step(now=0.0, stop_acknowledged=False)          # not started yet
     assert first.chassis_distance is None
@@ -90,15 +95,36 @@ def test_distance_is_issued_once_and_the_executor_waits_for_done():
     assert done.fault is None
 
 
-def test_a_distance_move_that_never_reports_done_faults():
-    steps = compile_pkg([distance(-17)])
+def test_a_distance_move_that_never_reports_done_stops_and_continues():
+    """A lost `D` is reported, not fatal.
+
+    It used to set `fault`, which ended the whole run.  Operator, 2026-09-29,
+    after two long field runs died at `PICK_ORANGE_LEFT` step 14 -- the same
+    package and the same step both times, and the car was NOT blocked against
+    anything: the firmware accepted the move (it kept reporting speed 20) and
+    never reported DONE on it.  A lost move is worth a STOP and a note, not a
+    run.
+    """
+    steps = compile_pkg([distance(-17), distance(3)])
     ex = ActionPackageExecutor(steps, arm=FakeArm(), distance_timeout_s=5.0)
     ex.step(now=0.0, stop_acknowledged=True)
+
+    result = None
     for i in range(200):
         result = ex.step(now=0.1 + i * 0.1, stop_acknowledged=True, chassis_done=False)
-        if result.fault:
+        if result.distance_timeout is not None:
             break
-    assert result.fault and "DONE" in result.fault
+
+    assert result.fault is None, "a lost move must not fault the run"
+    assert result.distance_timeout == (-17, 0, 0, 20), "the report must name the move"
+    assert result.chassis_stop, "a move that may still be in flight must be stopped"
+    assert not result.done, "the package has a second step to run"
+
+    # Exactly one report: the next tick moves on to the second step.
+    following = ex.step(now=30.0, stop_acknowledged=True, chassis_done=False)
+    assert following.distance_timeout is None
+    assert following.fault is None
+    assert following.chassis_distance == (3, 0, 0, 20)
 
 
 def test_a_stale_done_does_not_complete_the_next_move():
