@@ -351,6 +351,7 @@ class RouteV2StateMachine:
         #     build_place_extra_right_cm before it acts.
         self._build_blob_seen = False
         self._build_blob_absent_frames = 0
+        self._build_empty_frames = 0
         self._build_blobs_passed = 0
         self._build_visit_origin_cm: float | None = None
         self._build_first_visit_done = False
@@ -441,6 +442,7 @@ class RouteV2StateMachine:
         # by the constructor.
         self._build_blob_seen = False
         self._build_blob_absent_frames = 0
+        self._build_empty_frames = 0
         self._build_blobs_passed = 0
         self._build_visit_origin_cm = None
         self._build_place_clear_at_cm = None
@@ -1731,20 +1733,34 @@ class RouteV2StateMachine:
                 return RouteIntent("wait", self.state,
                                    wait_s=self.config.poll_period_s)
 
+            plan = build_plan_for_inventory(self.loop_context)
+            is_cap = bool(plan) and plan[0] in CAP_ACTIONS
+            # A placement must pass every building already standing.  On some
+            # arrivals the camera starts in the open space to their right, so
+            # there is no blob transition to count.  Keep a short empty-view
+            # debounce and then treat that known-empty arrival as already clear.
+            # A clipped blob remains occupied here: it may be the close face of
+            # a real building, and must leave the view before placement proceeds.
+            occupancy_visible = bool(visual.build_block_visible)
+
             # One "building passed" = a blob that WAS in view has left it, held
             # absent over build_slide_clear_frames so detector flicker cannot count
             # as a building.  The car passes exactly loop_context.building_count of
             # them: the buildings stand to the left of the free space and the car
             # arrives from the left.
-            if visual.build_block_visible:
+            if occupancy_visible:
                 self._build_blob_seen = True
                 self._build_blob_absent_frames = 0
+                self._build_empty_frames = 0
             elif self._build_blob_seen:
+                self._build_empty_frames = 0
                 self._build_blob_absent_frames += 1
                 if self._build_blob_absent_frames >= self.config.build_slide_clear_frames:
                     self._build_blob_seen = False
                     self._build_blob_absent_frames = 0
                     self._build_blobs_passed += 1
+            else:
+                self._build_empty_frames += 1
 
             # The ceiling latches, and a latched ceiling HOLDS: reaching it means the
             # detector never let the car past the buildings the memory counts, which
@@ -1752,8 +1768,6 @@ class RouteV2StateMachine:
             if self._build_slide_exhausted or self._build_cap_seek_exhausted:
                 return RouteIntent("stop", self.state)
 
-            plan = build_plan_for_inventory(self.loop_context)
-            is_cap = bool(plan) and plan[0] in CAP_ACTIONS
             # With only orange (a placement) the car gets past EVERY building, so it
             # ends up in the empty space beyond them.  With a purple (a cap) it only
             # gets past the ones already capped, because the cap goes on the next
@@ -1875,6 +1889,14 @@ class RouteV2StateMachine:
                 # Still finding something to get past, so the clear pose is not set
                 # yet -- it must be the pose where the view FIRST went clear.
                 self._build_place_clear_at_cm = None
+                if (self._build_empty_frames >= self.config.build_slide_clear_frames
+                        and not self._build_blob_seen):
+                    self._build_blobs_passed = skip
+                    # This frame is the first confirmed clear pose.  Start the
+                    # configured extra gap here; the next tick can commit once
+                    # that distance has actually been travelled.
+                    self._build_place_clear_at_cm = absolute_lateral_cm
+                    return self._build_slide_right(absolute_lateral_cm)
                 return self._build_slide_right(absolute_lateral_cm)
             elif absolute_lateral_cm is None:
                 # Same reason `_build_slide_right` refuses to move without an

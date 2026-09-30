@@ -176,7 +176,17 @@ CAP_ACTIONS = frozenset({
 
 def build_plan_for_inventory(context: LoopContext) -> tuple[str, ...]:
     """Return action names in their physical execution order."""
-    if context.build_waiting_for_purple and context.has_purple:
+    # A pending cap is a property of the build area, not of this process's
+    # last action.  `build_waiting_for_purple` is still kept for diagnostics and
+    # backwards compatibility, but it is lost when the route is restarted and
+    # it was never set by the orange-only BUILD_2/BUILD_3 actions.  The durable
+    # invariant is: there are more standing buildings than finished (capped)
+    # buildings.  That covers both cases:
+    #
+    #   * BUILD_2 followed by a later purple arrival; and
+    #   * a process started with an already standing, uncapped building.
+    pending_cap = context.building_count > context.cap_count
+    if context.has_purple and (context.build_waiting_for_purple or pending_cap):
         if context.suction_slot == "orange":
             return ("TOP_SUCTION_ORANGE_PURPLE",)
         if context.right_slot == "orange":

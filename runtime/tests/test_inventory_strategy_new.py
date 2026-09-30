@@ -18,6 +18,20 @@ def test_purple_inventory_uses_two_orange_base_then_purple_top_plan():
     assert build_plan_for_inventory(context) == ("BUILD_BASE",)
 
 
+def test_purple_inventory_caps_an_existing_uncapped_building():
+    context = LoopContext(purple_count=1, orange_count=2,
+                          building_count=1, cap_count=0)
+
+    assert build_plan_for_inventory(context) == ("TOP_SUCTION_ORANGE_PURPLE",)
+
+
+def test_purple_inventory_starts_a_new_base_after_all_buildings_are_capped():
+    context = LoopContext(purple_count=1, orange_count=2,
+                          building_count=1, cap_count=1)
+
+    assert build_plan_for_inventory(context) == ("BUILD_BASE",)
+
+
 def test_orange_only_inventory_uses_count_based_build_plan():
     assert build_plan_for_inventory(LoopContext(orange_count=3)) == ("BUILD_3",)
     assert build_plan_for_inventory(LoopContext(orange_count=2)) == ("BUILD_2",)

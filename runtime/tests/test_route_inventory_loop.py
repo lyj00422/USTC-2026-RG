@@ -1,4 +1,5 @@
 from route_v2.config import RouteV2Config
+from route_v2.loop_strategy import LoopContext
 from route_v2.state_machine import RouteState, RouteV2StateMachine, VisionRouteInput
 
 
@@ -189,6 +190,29 @@ def _cap_machine():
     return _not_the_first_visit(machine)
 
 
+def test_build_area_full_inventory_selects_cap_for_an_uncapped_building():
+    """Two orange plus one purple must cap the standing stack first.
+
+    This is the field case where the old planner returned BUILD_BASE because the
+    orange-only placement had never set ``build_waiting_for_purple``.
+    """
+    machine = RouteV2StateMachine(RouteV2Config())
+    machine.loop_context = LoopContext(purple_count=1, orange_count=2,
+                                       building_count=1, cap_count=0)
+    machine._enter(RouteState.BUILD_AREA, 0.0)
+    _not_the_first_visit(machine)
+    centred = VisionRouteInput(build_block_visible=True, build_center_error=0.0)
+    total_frames = (machine.config.build_find_confirm_frames
+                    + machine.config.build_align_confirm_frames)
+
+    for index in range(total_frames):
+        machine.step(0.1 + index * 0.1, vision=centred,
+                     absolute_lateral_cm=0.0)
+
+    assert machine.state is RouteState.BUILD_ACTION
+    assert machine.loop_context.build_plan == ("TOP_SUCTION_ORANGE_PURPLE",)
+
+
 def _place_machine():
     """Two orange and no purple: the planner wants BUILD_2, a PLACEMENT, so the
     car has to get past every building before it acts."""
@@ -206,11 +230,14 @@ def test_build_area_cap_centres_on_the_blob_and_does_not_slide():
     machine = _cap_machine()
     centred = VisionRouteInput(build_block_visible=True, build_center_error=0.0)
 
-    first = machine.step(0.1, vision=centred, absolute_lateral_cm=0.0)
-    second = machine.step(0.2, vision=centred, absolute_lateral_cm=0.0)
+    total_frames = (machine.config.build_find_confirm_frames
+                    + machine.config.build_align_confirm_frames)
+    results = [machine.step(0.1 + index * 0.1, vision=centred,
+                            absolute_lateral_cm=0.0)
+               for index in range(total_frames)]
 
-    assert first.kind == "wait", "confirming, not sliding"
-    assert second.state is RouteState.BUILD_ACTION
+    assert results[0].kind == "wait", "confirming, not sliding"
+    assert results[-1].state is RouteState.BUILD_ACTION
 
 
 def test_build_area_cap_strafes_toward_a_blob_that_is_off_centre():
@@ -220,10 +247,12 @@ def test_build_area_cap_strafes_toward_a_blob_that_is_off_centre():
     left = VisionRouteInput(build_block_visible=True, build_center_error=-0.20)
     right = VisionRouteInput(build_block_visible=True, build_center_error=+0.20)
 
+    machine._build_find_frames = machine.config.build_find_confirm_frames
     toward_left = machine.step(0.1, vision=left, absolute_lateral_cm=0.0)
     assert toward_left.kind == "strafe" and toward_left.speed > 0
 
     machine._build_align_frames = 0
+    machine._build_find_frames = machine.config.build_find_confirm_frames
     toward_right = machine.step(0.2, vision=right, absolute_lateral_cm=0.5)
     assert toward_right.kind == "strafe" and toward_right.speed < 0
 
@@ -236,6 +265,7 @@ def test_build_area_cap_skips_only_the_finished_buildings():
     machine.loop_context.cap_count = 1
     away = VisionRouteInput(build_block_visible=False)
 
+    machine._build_find_frames = machine.config.build_find_confirm_frames
     first = machine.step(0.1, vision=VisionRouteInput(build_block_visible=True),
                          absolute_lateral_cm=0.0)
     assert first.kind == "strafe" and first.speed < 0, "must slide right past it"
@@ -246,8 +276,12 @@ def test_build_area_cap_skips_only_the_finished_buildings():
                      absolute_lateral_cm=5.0 + index)
 
     centred = VisionRouteInput(build_block_visible=True, build_center_error=0.0)
-    machine.step(0.6, vision=centred, absolute_lateral_cm=9.0)
-    committed = machine.step(0.7, vision=centred, absolute_lateral_cm=9.0)
+    total_frames = (machine.config.build_find_confirm_frames
+                    + machine.config.build_align_confirm_frames)
+    results = [machine.step(0.6 + index * 0.1, vision=centred,
+                            absolute_lateral_cm=9.0)
+               for index in range(total_frames)]
+    committed = results[-1]
 
     assert committed.state is RouteState.BUILD_ACTION
 
@@ -270,6 +304,30 @@ def test_build_area_place_skips_every_building():
     # Clear of the building at 7.0, but the visit is NOT over: operator,
     # 2026-09-29, 「右移到没有方块的地方 长一点 目前两栋建筑之间有点近」.
     committed = machine.step(0.5, vision=away, absolute_lateral_cm=20.0)
+
+    assert committed.state is RouteState.BUILD_ACTION
+
+
+def test_build_area_place_commits_when_arrival_view_is_already_empty():
+    """A placement visit can arrive to the right of all known buildings.
+
+    There is then no visible blob to leave the frame.  After the same clear-view
+    debounce used for a normal transition, the route must use the known building
+    count and continue through the configured extra gap instead of sliding to the
+    ceiling forever.
+    """
+    machine = _place_machine()
+    machine.loop_context.building_count = 1
+    away = VisionRouteInput(build_block_visible=False)
+    clear_frames = machine.config.build_slide_clear_frames
+
+    for index in range(clear_frames):
+        held = machine.step(0.1 + index * 0.1, vision=away,
+                            absolute_lateral_cm=0.0)
+        assert held.state is RouteState.BUILD_AREA
+
+    extra = machine.config.build_place_extra_right_cm
+    committed = machine.step(0.5, vision=away, absolute_lateral_cm=extra)
 
     assert committed.state is RouteState.BUILD_ACTION
 
@@ -331,13 +389,13 @@ def test_build_area_holds_at_the_slide_ceiling_instead_of_acting():
     blocked = VisionRouteInput(build_block_visible=True)
 
     machine.step(0.1, vision=blocked, absolute_lateral_cm=0.0)
-    held = machine.step(0.2, vision=blocked, absolute_lateral_cm=-140.0)
+    held = machine.step(0.2, vision=blocked, absolute_lateral_cm=-300.0)
 
     assert held.state is RouteState.BUILD_AREA
     assert held.kind == "stop"
 
     after = machine.step(0.3, vision=VisionRouteInput(build_block_visible=False),
-                         absolute_lateral_cm=-141.0)
+                         absolute_lateral_cm=-301.0)
     assert after.state is RouteState.BUILD_AREA
     assert after.kind == "stop"
 
