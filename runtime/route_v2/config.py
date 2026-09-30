@@ -880,6 +880,8 @@ class RouteV2Config:
     # Deliberately NOT the coarse/search speed: this is a positioning move that
     # has to stop on a vision reading, and stopping distance is what overshoots.
     build_slide_speed: int = 12
+    # The first actual building starts 5 cm to the right of the arrival pose.
+    build_first_right_cm: float = 5.0
     # How much further right a PLACEMENT visit goes after the view first goes
     # clear, before it commits to the action.
     #
@@ -912,6 +914,9 @@ class RouteV2Config:
     # 2026-09-30 the one usable silhouette lasted ~0.3 s (~6 frames at 20 Hz) and
     # the car acted on its first frame, lost it, and went back to sliding.
     build_find_confirm_frames: int = 4
+    # Once the preceding capped building has left view, a full-window orange
+    # target is the next stack.  Fewer frames than contour centring are needed.
+    build_next_cap_full_frames: int = 2
     # Once a cap HAS a confirmed target, how many consecutive non-find frames it
     # will hold through before giving the target up and searching on.
     #
@@ -1150,6 +1155,10 @@ def load_route_v2_config(
         # One frame would let a single misdetected frame end the slide early and
         # build in the wrong place; the slide is cheap, so require a run of them.
         raise ValueError("build_slide_clear_frames must be at least 1")
+    if cfg.build_first_right_cm < 0:
+        raise ValueError("build_first_right_cm cannot be negative")
+    if cfg.build_next_cap_full_frames < 1:
+        raise ValueError("build_next_cap_full_frames must be at least 1")
     if cfg.build_slide_max_cm <= 0:
         raise ValueError("build_slide_max_cm must be positive")
     if not 1 <= abs(cfg.build_slide_speed) <= 100:

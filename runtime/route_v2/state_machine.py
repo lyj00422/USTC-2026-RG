@@ -364,6 +364,8 @@ class RouteV2StateMachine:
         #     hunt budget, separate from the whole-slide ceiling -- see
         #     _build_cap_seek_spent.
         self._build_find_frames = 0
+        self._build_next_cap_seen = False
+        self._build_next_cap_absent_frames = 0
         self._build_cap_seek_origin_cm: float | None = None
         self._build_cap_seek_exhausted = False
         #   _build_cap_acquired latches "this visit has a confirmed target"; while it
@@ -449,6 +451,8 @@ class RouteV2StateMachine:
         self._build_slide_exhausted = False
         self._build_align_frames = 0
         self._build_find_frames = 0
+        self._build_next_cap_seen = False
+        self._build_next_cap_absent_frames = 0
         self._build_cap_seek_origin_cm = None
         self._build_cap_seek_exhausted = False
         self._build_cap_acquired = False
@@ -1703,29 +1707,22 @@ class RouteV2StateMachine:
                 # how far the visit moved the car sideways.
                 self._build_visit_origin_cm = absolute_lateral_cm
 
-            # THE RUN'S FIRST ARRIVAL BUILDS WHERE IT STANDS.  Operator,
-            # 2026-09-29: 「第一次搭建 到了搭建区直接执行搭建动作」.
-            #
-            # Everything below exists to place the car correctly relative to
-            # structures that are ALREADY STANDING.  On the first arrival there are
-            # none -- the build area is empty, so a slide has nothing to find and
-            # can only carry the car away from the pose the 330 cm leg was tuned to
-            # leave it in, which is a pose the operator has already set by hand.
-            #
-            # The origin above is taken first, so BUILD_BACK_TO_LINE still gets its
-            # answer to "how far did this visit move the car sideways" -- the answer
-            # is nowhere, which is a real answer: the hunt then runs on its margin
-            # alone.
-            #
-            # `wait`, not a fall-through into the BUILD_ACTION block below: the rest
-            # of THIS block is the slide, and it would otherwise run on a tick whose
-            # state has already changed.  One tick of `wait` also means BUILD_ACTION
-            # is first evaluated against a fresh reading rather than this tick's
-            # BUILD_OCCUPANCY one.
+            # The first actual building has no preceding stack to find.  Move 5 cm
+            # right from the arrival pose, then run its inventory-selected action.
+            # An empty pickup visit does not consume this first-building offset.
             if not self._build_first_visit_done:
-                # Latched before the plan is prepared: this WAS the first visit
-                # whatever it turns out to be carrying, and the next arrival is the
-                # second one.
+                if not build_plan_for_inventory(self.loop_context):
+                    return self._build_begin_action(now) or RouteIntent(
+                        "wait", self.state, wait_s=self.config.poll_period_s)
+                if absolute_lateral_cm is None or self._build_visit_origin_cm is None:
+                    return RouteIntent("stop", self.state)
+                # The hardware odometer's lateral sign is installation-specific;
+                # the command below is the rightward command.  Use travelled
+                # magnitude here so dry-run and the two encoder sign conventions
+                # share the same 5 cm gate.
+                rightward_cm = abs(absolute_lateral_cm - self._build_visit_origin_cm)
+                if rightward_cm < self.config.build_first_right_cm:
+                    return self._build_slide_right(absolute_lateral_cm)
                 self._build_first_visit_done = True
                 intent = self._build_begin_action(now)
                 if intent is not None:
@@ -1735,6 +1732,8 @@ class RouteV2StateMachine:
 
             plan = build_plan_for_inventory(self.loop_context)
             is_cap = bool(plan) and plan[0] in CAP_ACTIONS
+            skip = (self.loop_context.cap_count if is_cap
+                    else self.loop_context.building_count)
             # A placement must pass every building already standing.  On some
             # arrivals the camera starts in the open space to their right, so
             # there is no blob transition to count.  Keep a short empty-view
@@ -1748,7 +1747,12 @@ class RouteV2StateMachine:
             # as a building.  The car passes exactly loop_context.building_count of
             # them: the buildings stand to the left of the free space and the car
             # arrives from the left.
-            if occupancy_visible:
+            if is_cap and self._build_blobs_passed >= skip:
+                # The next visible orange is the target, not another building to
+                # skip.  In particular, never count its disappearance as permission
+                # to cap a later building or the empty floor.
+                pass
+            elif occupancy_visible:
                 self._build_blob_seen = True
                 self._build_blob_absent_frames = 0
                 self._build_empty_frames = 0
@@ -1773,10 +1777,39 @@ class RouteV2StateMachine:
             # gets past the ones already capped, because the cap goes on the next
             # stack that is still waiting.  Operator, 2026-09-24: 「只有橙色 要跳过
             # 所有建筑」/「有紫色才要封顶 跳过已经封顶的」.
-            skip = (self.loop_context.cap_count if is_cap
-                    else self.loop_context.building_count)
-
             if is_cap:
+                if skip > 0 and self.loop_context.building_count > skip:
+                    # A later purple must cap the next uncapped stack.  First pass
+                    # each finished orange structure by seeing it leave the view.
+                    # Then require the NEXT orange to occupy the build window.
+                    # Its near face fills the frame, so contour centring would use
+                    # the frame centre rather than the stack centre and miss it.
+                    if self._build_blobs_passed < skip:
+                        return self._build_slide_right(absolute_lateral_cm)
+                    if visual.build_block_visible:
+                        self._build_next_cap_seen = True
+                        self._build_next_cap_absent_frames = 0
+                    elif self._build_next_cap_seen:
+                        self._build_next_cap_absent_frames += 1
+                        if self._build_next_cap_absent_frames >= self.config.build_slide_clear_frames:
+                            self._build_cap_seek_exhausted = True
+                            return RouteIntent("stop", self.state)
+                        return RouteIntent("wait", self.state,
+                                           wait_s=self.config.poll_period_s)
+                    if visual.build_block_visible and visual.build_block_clipped:
+                        self._build_find_frames += 1
+                        if self._build_find_frames >= self.config.build_next_cap_full_frames:
+                            prepare_build_plan(self.loop_context)
+                            self._enter(RouteState.BUILD_ACTION, now)
+                            return RouteIntent("wait", self.state,
+                                               wait_s=self.config.poll_period_s)
+                        return RouteIntent("wait", self.state,
+                                           wait_s=self.config.poll_period_s)
+                    self._build_find_frames = 0
+                    if self._build_cap_seek_spent(absolute_lateral_cm):
+                        self._build_cap_seek_exhausted = True
+                        return RouteIntent("stop", self.state)
+                    return self._build_slide_right(absolute_lateral_cm)
                 # CAPPING.  Get past the finished buildings, then centre on the
                 # stack that is still waiting for its cap -- the cap goes on top of
                 # what the car is looking at, so it has to line up with it first.
