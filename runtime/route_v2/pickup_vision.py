@@ -732,7 +732,9 @@ class PickupReturnController:
 
     def __init__(self, *, baseline_cm: float, tolerance_cm: float, speed: int,
                  seek_max_cm: float, timeout_s: float, confirm_frames: int,
-                 one_way_direction: int = 0, swing_cm: tuple[float, ...] = ()):
+                 one_way_direction: int = 0, swing_cm: tuple[float, ...] = (),
+                 center_cm: float | None = None,
+                 return_guard_margin_cm: float = 15.0):
         if tolerance_cm < 0 or speed == 0 or seek_max_cm <= 0 or timeout_s <= 0 or confirm_frames < 1:
             raise ValueError("invalid return-to-line limits")
         if one_way_direction not in (-1, 0, 1):
@@ -755,6 +757,16 @@ class PickupReturnController:
         # says which side of the line the car was left on.
         #   Operator, 2026-09-22 night: "是取左边 就往右边一直找线"
         self.one_way_direction = int(one_way_direction)
+        # Where the car ENTERED the area -- for the orange area that is where the
+        # line still is (the module reads black there and white out on the floor,
+        # measured over run 20260930_164742: mask 0 at the entry pose, 255 over
+        # every search leg).  The hunt returns to it before ending, so the blind
+        # reverse-and-turn that follows starts from the line instead of from
+        # wherever the sweep gave up.  None keeps the old behaviour.
+        self.center_cm = None if center_cm is None else float(center_cm)
+        self.return_guard_margin_cm = float(return_guard_margin_cm)
+        self._returning_to_center = False
+        self._search_end_reason = ""
         self.phase = PickupReturnPhase.RETURN_BASELINE
         self._origin_cm: float | None = None
         self._started_at: float | None = None
@@ -763,13 +775,78 @@ class PickupReturnController:
     def _intent(self, kind: str, speed: int = 0, reason: str = "") -> PickupReturnIntent:
         return PickupReturnIntent(kind, self.phase, speed, reason)
 
+    def _leave_the_search(self, now: float, absolute_lateral_cm: float,
+                          reason: str) -> PickupReturnIntent:
+        """End the hunt -- back onto the line first, when we know where it is.
+
+        What follows this state is the reverse-and-turn towards the build area,
+        which is deliberately sensor-blind, so ending the hunt out at the guard
+        walks the whole lateral error into that leg.  Operator, 2026-09-30,
+        watching run 20260930_164742: 「往右边找到头 没有 再往左边找到头 没有
+        然后直接倒车旋转去取物区 没有回中!」-- the car had strafed 78 cm off the
+        line and reversed from there.
+
+        So the last move is a drive back to `center_cm` (the pose the car entered
+        the area at, where the line is).  `reason` is carried into the telemetry
+        when that drive finishes: the car still carries on to the build area, it
+        just does it from the line rather than from wherever the sweep stopped.
+        """
+        if (self.center_cm is not None
+                and abs(absolute_lateral_cm - self.center_cm) > self.tolerance_cm):
+            self._returning_to_center = True
+            self._search_end_reason = reason
+            self.phase = PickupReturnPhase.RETURN_BASELINE
+            self._origin_cm = absolute_lateral_cm
+            self._started_at = now
+            self._line_frames = 0
+            return self._intent(
+                "return_baseline",
+                self.speed if self.center_cm > absolute_lateral_cm else -self.speed,
+                "return_to_line_before_continuing",
+            )
+        self.phase = PickupReturnPhase.FAULT
+        return self._intent("fault", reason=reason)
+
     def step(self, *, now: float, absolute_lateral_cm: float,
              line_found: bool) -> PickupReturnIntent:
+        if self._returning_to_center:
+            # The drive back onto the line is itself a line hunt: the module
+            # reads black at the entry pose and white out on the floor, so a
+            # reading on the way back IS the reacquire -- end as a success
+            # rather than keep driving to a dead-reckoned number.
+            self._line_frames = self._line_frames + 1 if line_found else 0
+            if self._line_frames >= self.confirm_frames:
+                self.phase = PickupReturnPhase.DONE
+                return self._intent("return_line_done", reason="probe_line_confirmed")
         if self.phase is PickupReturnPhase.RETURN_BASELINE:
-            error = self.baseline_cm - absolute_lateral_cm
+            target = self.center_cm if self._returning_to_center else self.baseline_cm
+            error = target - absolute_lateral_cm
             if abs(error) > self.tolerance_cm:
-                return self._intent("return_baseline", self.speed if error > 0 else -self.speed,
-                                    "saved_absolute_baseline")
+                if self._returning_to_center:
+                    # Bounded like every other leg: the distance it has to cover
+                    # plus the braking overshoot the area's own sweeps show.  A
+                    # mis-latched centre must not become a strafe out of the area.
+                    needed_cm = abs(self._origin_cm - target)
+                    if (abs(absolute_lateral_cm - self._origin_cm)
+                            >= needed_cm + self.return_guard_margin_cm
+                            or now - self._started_at >= self.timeout_s):
+                        self.phase = PickupReturnPhase.FAULT
+                        return self._intent("fault", reason="return_to_line_guard_exhausted")
+                return self._intent(
+                    "return_baseline",
+                    self.speed if error > 0 else -self.speed,
+                    "return_to_line_before_continuing" if self._returning_to_center
+                    else "saved_absolute_baseline",
+                )
+            if self._returning_to_center:
+                # Standing on the entry pose with no line reading under the bar.
+                # Hand the state machine the same "carry on to the build area"
+                # result the un-centred fault used to give, but from the line.
+                self.phase = PickupReturnPhase.FAULT
+                return self._intent(
+                    "fault",
+                    reason=self._search_end_reason or "one_way_return_line_exhausted",
+                )
             self.phase = PickupReturnPhase.SEEK_OUT
             self._origin_cm = absolute_lateral_cm
             self._started_at = now
@@ -785,8 +862,8 @@ class PickupReturnController:
                     or now - self._started_at >= self.timeout_s
                 )
                 if exhausted:
-                    self.phase = PickupReturnPhase.FAULT
-                    return self._intent("fault", reason="one_way_return_line_exhausted")
+                    return self._leave_the_search(now, absolute_lateral_cm,
+                                                  "one_way_return_line_exhausted")
                 return self._intent("seek_line", self.one_way_direction * self.speed,
                                     "one_way_probe_reacquire")
             # GROWING SWING -- the direction is NOT known (orange area), so sweep
@@ -813,8 +890,8 @@ class PickupReturnController:
                     or now - self._started_at >= self.timeout_s):
                 self._target_index += 1
                 if self._target_index >= len(self._targets):
-                    self.phase = PickupReturnPhase.FAULT
-                    return self._intent("fault", reason="return_line_swing_exhausted")
+                    return self._leave_the_search(now, absolute_lateral_cm,
+                                                  "return_line_swing_exhausted")
                 self._started_at = now
                 self._line_frames = 0
                 target = self._targets[self._target_index]

@@ -365,6 +365,7 @@ def test_orange_runtime_and_restarted_search_both_start_left(monkeypatch):
     runtime._pickup_area = None
     runtime._pickup_baseline_cm = None
     runtime._orange_search_origin_cm = None
+    runtime._orange_origin_state = None
     runtime._purple_target_slot = None
     runtime._purple_search_hint = None
 
@@ -374,6 +375,23 @@ def test_orange_runtime_and_restarted_search_both_start_left(monkeypatch):
     assert selected_directions == ["left", "left"]
     assert runtime._orange_search_origin_cm == 10.0
     assert runtime._pickup_baseline_cm == 12.0
+
+    # The action packages suspend this task after EVERY grab and the tick
+    # re-selects ORANGE_CLOSE immediately -- by then the car has strafed further
+    # out to reach the block.  The origin is the pose the car ENTERED the area
+    # at, so a re-selection inside the same visit must leave it alone.  Run
+    # 20260930_164742 re-latched it at 172.48 against a return at 170.96, read
+    # net -1.5, and sent the car back the way it had come.
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 172.5)
+    assert runtime._orange_search_origin_cm == 10.0
+
+    # Leaving the area and coming back IS a new visit, and latches again.
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.BUILD_OCCUPANCY, RouteState.BUILD_AREA, 172.5)
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 200.0)
+    assert runtime._orange_search_origin_cm == 200.0
 
 
 @pytest.mark.parametrize(
@@ -405,6 +423,7 @@ def test_orange_return_runtime_uses_cumulative_net_displacement(
     runtime._pickup_area = "orange"
     runtime._pickup_baseline_cm = 0.0
     runtime._orange_search_origin_cm = origin_cm
+    runtime._orange_origin_state = RouteState.PICKUP_2_VISION_ONLY
     runtime._return_controller = None
 
     runtime.observe(

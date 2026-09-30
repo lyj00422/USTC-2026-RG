@@ -573,6 +573,64 @@ def test_return_controller_one_way_hunts_until_its_own_bound():
     assert exhausted.reason == "one_way_return_line_exhausted"
 
 
+def test_return_controller_drives_back_onto_the_line_before_carrying_on():
+    """An exhausted one-way hunt must not hand the reverse an off-line pose.
+
+    Operator, 2026-09-30, watching run 20260930_164742: 「往右边找到头 没有 再往
+    左边找到头 没有 然后直接倒车旋转去取物区 没有回中!」-- the car strafed 78 cm
+    off the line, faulted there, and reversed 30 cm and turned 180 from that
+    pose.  `center_cm` is the entry pose, which is where the line is.
+    """
+    returning = PickupReturnController(
+        baseline_cm=60, tolerance_cm=1, speed=30, seek_max_cm=75, timeout_s=45,
+        confirm_frames=2, one_way_direction=-1, center_cm=60.0,
+    )
+    # Starts on the line, hunts the other way, exhausts its own bound at 75 cm.
+    assert returning.step(now=0, absolute_lateral_cm=60.0, line_found=False).kind == "seek_line"
+    hunting = returning.step(now=1.0, absolute_lateral_cm=-10.0, line_found=False)
+    assert hunting.kind == "seek_line" and hunting.speed < 0
+
+    # Exhausted: drive back towards the entry pose instead of faulting in place.
+    back = returning.step(now=10.0, absolute_lateral_cm=-15.0, line_found=False)
+    assert back.kind == "return_baseline"
+    assert back.speed > 0, "60 is to the LEFT of -15, so the drive back strafes left"
+    assert back.reason == "return_to_line_before_continuing"
+
+    # Still on the way back.
+    assert returning.step(now=11.0, absolute_lateral_cm=20.0, line_found=False).kind == "return_baseline"
+
+    # Back on the entry pose: now the carry-on result, from the line.
+    done = returning.step(now=12.0, absolute_lateral_cm=59.5, line_found=False)
+    assert done.kind == "fault"
+    assert done.reason == "one_way_return_line_exhausted"
+
+    # A wrong centre cannot become a strafe out of the area.
+    runaway = PickupReturnController(
+        baseline_cm=60, tolerance_cm=1, speed=30, seek_max_cm=75, timeout_s=45,
+        confirm_frames=2, one_way_direction=-1, center_cm=60.0,
+        return_guard_margin_cm=15.0,
+    )
+    runaway.step(now=0, absolute_lateral_cm=60.0, line_found=False)
+    runaway.step(now=1.0, absolute_lateral_cm=-15.0, line_found=False)
+    assert runaway.step(now=10.0, absolute_lateral_cm=-15.0, line_found=False).kind == "return_baseline"
+    stopped = runaway.step(now=11.0, absolute_lateral_cm=-110.0, line_found=False)
+    assert stopped.kind == "fault"
+    assert stopped.reason == "return_to_line_guard_exhausted"
+
+
+def test_return_controller_line_found_on_the_way_back_ends_the_state():
+    """The drive back is a hunt too: the probe reading the line wins."""
+    returning = PickupReturnController(
+        baseline_cm=60, tolerance_cm=1, speed=30, seek_max_cm=75, timeout_s=45,
+        confirm_frames=2, one_way_direction=-1, center_cm=60.0,
+    )
+    returning.step(now=0, absolute_lateral_cm=60.0, line_found=False)
+    returning.step(now=1.0, absolute_lateral_cm=-15.0, line_found=False)
+    assert returning.step(now=10.0, absolute_lateral_cm=-15.0, line_found=False).kind == "return_baseline"
+    assert returning.step(now=11.0, absolute_lateral_cm=30.0, line_found=True).kind == "return_baseline"
+    assert returning.step(now=11.1, absolute_lateral_cm=31.0, line_found=True).kind == "return_line_done"
+
+
 def test_return_controller_faults_after_both_bounded_sweeps():
     returning = PickupReturnController(
         baseline_cm=0, tolerance_cm=1, speed=10, seek_max_cm=5, timeout_s=10,

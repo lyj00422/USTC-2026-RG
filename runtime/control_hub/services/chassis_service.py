@@ -26,6 +26,8 @@ class ChassisService:
         keepalive_s: float = 5.0,
         keepalive_quiet_s: float = 2.0,
         keepalive_log_every_s: float = 60.0,
+        open_retry_s: float = 20.0,
+        open_retry_interval_s: float = 2.5,
     ) -> None:
         self.hub_state = hub_state
         self.event_log = event_log
@@ -37,6 +39,8 @@ class ChassisService:
         self.keepalive_s = max(1.0, float(keepalive_s))
         self.keepalive_quiet_s = max(0.0, float(keepalive_quiet_s))
         self.keepalive_log_every_s = max(0.0, float(keepalive_log_every_s))
+        self.open_retry_s = max(0.0, float(open_retry_s))
+        self.open_retry_interval_s = max(0.1, float(open_retry_interval_s))
         self._device: ChassisDevice | None = None
         self._transport = None
         self._path: str | None = None
@@ -80,12 +84,7 @@ class ChassisService:
         with self._lock:
             if self._device is not None:
                 raise RuntimeError("chassis serial port is already connected")
-            self._port_lock.acquire()
-            try:
-                transport = self.transport_factory(device, baudrate)
-            except Exception:
-                self._port_lock.release()
-                raise
+            transport = self._open_transport(device, baudrate)
             self._transport = transport
             self._device = ChassisDevice(transport)
             self._path = device
@@ -113,6 +112,45 @@ class ChassisService:
                     {"state": "enabled", "command": "SPD", "period_s": self.keepalive_s, "quiet_s": self.keepalive_quiet_s},
                 )
             return self.status()
+
+    def _open_transport(self, device: str, baudrate: int):
+        """Open the TTY, retrying across the RFCOMM maintainer's rebuild windows.
+
+        2026-09-30, after the Pi reboot: auto-connect failed with `[Errno 5]
+        Input/output error` while the link itself was healthy -- a standalone
+        lock+SPD probe answered on its first attempt a minute later.  The
+        maintainer (`robogame-chassis-rfcomm`) releases and rebuilds
+        /dev/rfcomm0 every ~14 s, because the JDY-31 hangs up an idle SPP
+        session after ~13-20 s, and an open that lands inside that window gets
+        EIO.  `ChassisLink`, which the route owns, reopens for exactly this
+        reason (see its module docstring); the console's one-shot open simply
+        gave up and left the operator with a hub that controls nothing.
+
+        The port lock is released between attempts on purpose.  Held through a
+        teardown it pins the dead link: the maintainer will not rebuild while an
+        application holds the port, so the retry would never meet a fresh SPP
+        session.  `_pi_chassis_ok.py` carries the same rule.
+        """
+        deadline = time.monotonic() + self.open_retry_s
+        attempts = 0
+        while True:
+            attempts += 1
+            # ChassisPortBusy raised from here is not a race to wait out:
+            # another program owns the port and has to be stopped first.
+            self._port_lock.acquire()
+            try:
+                return self.transport_factory(device, baudrate)
+            except Exception:
+                self._port_lock.release()
+                if time.monotonic() >= deadline:
+                    if attempts > 1:
+                        self.event_log.append(
+                            "fault",
+                            "chassis",
+                            {"message": f"could not open {device} in {attempts} attempts"},
+                        )
+                    raise
+                time.sleep(self.open_retry_interval_s)
 
     def disconnect(self) -> dict:
         with self._lock:

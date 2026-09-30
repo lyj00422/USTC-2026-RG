@@ -148,6 +148,10 @@ class RouteVisionRuntime:
         self._pickup_area: str | None = None
         self._pickup_baseline_cm: float | None = None
         self._orange_search_origin_cm: float | None = None
+        # Which state `_orange_search_origin_cm` was latched in.  A pickup visit
+        # is one continuous run of PICKUP_2_VISION_ONLY, and the latch below
+        # keys on this rather than on the task changing -- see `_select`.
+        self._orange_origin_state: RouteState | None = None
         # The purple block the route is going for, by the state machine's own
         # rule (loop_strategy.choose_purple_slot), decided at J3.  Kept here so
         # the return hunt's direction cannot disagree with the pickup.
@@ -218,6 +222,9 @@ class RouteVisionRuntime:
                 absolute_lateral_cm: float | None) -> None:
         if task is self._task:
             return
+        if state is not RouteState.PICKUP_2_VISION_ONLY:
+            # Left the area: the next visit latches its own entry pose.
+            self._orange_origin_state = None
         self._task = task
         self._generation = self.worker.select(task)
         self._task_selected_at = self.clock()
@@ -253,9 +260,29 @@ class RouteVisionRuntime:
             )
             self._pickup_area = area
             self._pickup_baseline_cm = absolute_lateral_cm
-            self._orange_search_origin_cm = (
-                absolute_lateral_cm if area == "orange" else None
-            )
+            # The orange return hunt goes AWAY from where the blocks were taken,
+            # measured from the pose the car ENTERED the area at -- which is also
+            # where the line is, and what the return drives back to before the
+            # blind reverse (see PickupReturnController.center_cm).
+            #
+            # Latched once per VISIT, not once per task selection.  The action
+            # packages suspend this task after every grab and the tick re-selects
+            # ORANGE_CLOSE immediately, so keying the latch on the task moved the
+            # origin to the pose right after the LAST grab -- the far end of the
+            # search.  net then read ~0 (or a hair negative) and
+            # `_orange_return_direction` sent the car back the way it had come.
+            # Run 20260930_164742, cycle 4: it grabbed two on the left, searched
+            # to 250 cm, folded back, swept right to 96 cm, and the re-latch at
+            # 172.48 against a return at 170.96 gave net -1.5 -> strafed LEFT 78 cm
+            # into the guard's fault, where cycles 2 and 3 (unknown to it, latched
+            # far enough away) had hunted RIGHT and found the line in 3-7 s.
+            if area == "orange":
+                if state is not self._orange_origin_state:
+                    self._orange_search_origin_cm = absolute_lateral_cm
+                    self._orange_origin_state = state
+            else:
+                self._orange_search_origin_cm = None
+                self._orange_origin_state = None
             self._return_controller = None
         elif state not in {RouteState.PICKUP_RETURN_TO_LINE,
                            RouteState.PICKUP_2_RETURN_TO_LINE,
@@ -570,6 +597,13 @@ class RouteVisionRuntime:
                     confirm_frames=self.config.seek_line_confirm_frames,
                     one_way_direction=one_way,
                     swing_cm=self.config.pickup_return_line_swing_cm,
+                    # The orange area's entry pose, which is where the line is:
+                    # the hunt drives back onto it before handing the car to the
+                    # blind reverse, instead of leaving it out at the guard.
+                    # None for purple, whose fault goes to FAULT anyway.
+                    center_cm=(self._orange_search_origin_cm
+                               if self._pickup_area == "orange" else None),
+                    return_guard_margin_cm=area_cfg.return_guard_margin_cm,
                 )
             returning = self._return_controller.step(
                 now=now, absolute_lateral_cm=absolute_lateral_cm,
