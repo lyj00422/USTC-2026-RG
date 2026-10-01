@@ -186,25 +186,44 @@ def build_plan_for_inventory(context: LoopContext) -> tuple[str, ...]:
     #   * BUILD_2 followed by a later purple arrival; and
     #   * a process started with an already standing, uncapped building.
     pending_cap = context.building_count > context.cap_count
+    if context.has_purple and context.orange_count_actual >= 2:
+        # One purple and two orange is a WHOLE structure, start to finish: the base
+        # package lays the two orange layers and the car caps the stack on the very
+        # same visit, WITHOUT going back out for a fourth layer.
+        #
+        # Operator, 2026-10-02: 「到了第二栋建筑 直接执行吸盘加右边搭建两层 然后直接
+        # 执行用左边的紫色封第三层 ... 保证完成两层建筑就行」, and on whether this is
+        # the first structure only: 「每栋都这样」.  So the pair is unconditional --
+        # 2 layers (`build_base`, 「从吸盘和右侧搭两层」) plus the left purple as the
+        # third (`cap_purple`, 「从左吸搭第三层」, the same package PLACE_PURPLE maps
+        # to).
+        #
+        # Order matters twice over here:
+        #
+        #   * It sits ABOVE the pending-cap branch.  `build_waiting_for_purple` and
+        #     `pending_cap` are both true on the arrival AFTER a build_base, and that
+        #     branch used to answer with TOP_*_ORANGE_PURPLE -- the 3rd-and-4th-layer
+        #     package.  That is the round this change replaces.
+        #   * The base must come first: `consume(orange=2)` takes from
+        #     suction, then right; PLACE_PURPLE then takes the left slot, and it
+        #     raises unless the left block is the purple.
+        #
+        # The two actions are one visit.  `run_route_v2` already drives a multi-action
+        # `build_plan` (reset -> action -> reset -> action) and calls `apply_build_action`
+        # on each completion, so BUILD_BASE then PLACE_PURPLE lands as
+        # building_count +1 / cap_count +1 -- a finished structure, and no
+        # `build_waiting_for_purple` left over for the next arrival to trip on.
+        #
+        # This branch used to return BUILD_BASE alone (gated, earlier still, on `not
+        # initial_build_done`).  Operator, 2026-09-24: 「搭建完一个封顶的四个后 下一次
+        # 回到搭建区 应该是先放下吸盘的和取右边的搭建两层 再回去补橙色 回来封顶！」
+        return ("BUILD_BASE", "PLACE_PURPLE")
     if context.has_purple and (context.build_waiting_for_purple or pending_cap):
         if context.suction_slot == "orange":
             return ("TOP_SUCTION_ORANGE_PURPLE",)
         if context.right_slot == "orange":
             return ("TOP_RIGHT_ORANGE_PURPLE",)
         return ("PLACE_PURPLE",)
-    if context.has_purple and context.orange_count_actual >= 2:
-        # Every purple-plus-two-orange arrival builds the SAME base package (0007,
-        # 「放吸盘的橙色和右边的橙色作为两层」), not just the first one of the run.
-        #
-        # This used to be gated on `not initial_build_done`, so the second time the
-        # route came back with one purple and two orange it fell through to the
-        # orange-count branches and ran a different package instead.
-        #
-        # Operator, 2026-09-24: 「搭建完一个封顶的四个后 下一次回到搭建区 应该是先放下
-        # 吸盘的和取右边的搭建两层 再回去补橙色 回来封顶！现在却执行取右边的橙色和左边
-        # 的紫色搭建两层封顶 动作包错误」-- TOP_RIGHT_ORANGE_PURPLE is the package they
-        # saw, and it caps instead of laying a new base.
-        return ("BUILD_BASE",)
     if context.has_purple and not context.initial_build_done:
         return ("PLACE_PURPLE",)
     orange = context.orange_count_actual

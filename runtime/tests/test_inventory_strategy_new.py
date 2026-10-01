@@ -1,5 +1,6 @@
 from route_v2.loop_strategy import (
     LoopContext,
+    apply_build_action,
     build_plan_for_inventory,
     next_route_after_build,
     orange_capacity,
@@ -12,24 +13,49 @@ def test_capacity_is_three_total_and_purple_uses_one_slot():
     assert orange_capacity(purple_count=1, orange_count=2) == 0
 
 
-def test_purple_inventory_uses_two_orange_base_then_purple_top_plan():
+def test_purple_inventory_builds_and_caps_the_structure_in_one_visit():
+    """One purple and two orange is a WHOLE structure, not half of one.
+
+    Operator, 2026-10-02: 「先用吸盘和右边的搭建两层 再直接使用左边紫色封顶」, and
+    on the round it belongs to: 「到了J3 左旋去取物区2 取一个紫色 到取物区1取两个橙色
+    到了搭建区 直接搭建三层 重复3次」.  So the base and the cap are ONE visit's plan --
+    both packages already exist, and the car never goes back out for a fourth layer.
+    """
     context = LoopContext(purple_count=1, orange_count=2)
 
-    assert build_plan_for_inventory(context) == ("BUILD_BASE",)
+    assert build_plan_for_inventory(context) == ("BUILD_BASE", "PLACE_PURPLE")
 
 
-def test_purple_inventory_caps_an_existing_uncapped_building():
-    context = LoopContext(purple_count=1, orange_count=2,
-                          building_count=1, cap_count=0)
+def test_purple_inventory_ignores_a_pending_cap_it_can_finish_in_one_visit():
+    """The same plan whether the counters say a cap is pending or not.
 
-    assert build_plan_for_inventory(context) == ("TOP_SUCTION_ORANGE_PURPLE",)
+    `building_count > cap_count` used to intercept this arrival with
+    TOP_SUCTION_ORANGE_PURPLE -- 「搭三四层」, the 4-layer round this change replaces.
+    Both counters advance by one either way (BUILD_BASE then PLACE_PURPLE), so a
+    completed structure always leaves them equal.
+    """
+    uncapped = LoopContext(purple_count=1, orange_count=2,
+                           building_count=1, cap_count=0)
+    assert build_plan_for_inventory(uncapped) == ("BUILD_BASE", "PLACE_PURPLE")
+
+    capped = LoopContext(purple_count=1, orange_count=2,
+                         building_count=1, cap_count=1)
+    assert build_plan_for_inventory(capped) == ("BUILD_BASE", "PLACE_PURPLE")
 
 
-def test_purple_inventory_starts_a_new_base_after_all_buildings_are_capped():
-    context = LoopContext(purple_count=1, orange_count=2,
-                          building_count=1, cap_count=1)
+def test_finishing_the_one_visit_plan_leaves_both_counters_level():
+    """The invariant the next arrival depends on: a run of the plan in one visit
+    finishes the structure, so nothing is left waiting for a cap to come back for."""
+    context = LoopContext(purple_count=1, orange_count=2)
+    plan = build_plan_for_inventory(context)
 
-    assert build_plan_for_inventory(context) == ("BUILD_BASE",)
+    for action in plan:
+        apply_build_action(context, action)
+
+    assert context.building_count == 1
+    assert context.cap_count == 1
+    assert context.build_waiting_for_purple is False
+    assert context.total_count == 0
 
 
 def test_orange_only_inventory_uses_count_based_build_plan():

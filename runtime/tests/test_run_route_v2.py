@@ -11,6 +11,7 @@ from run_route_v2 import (
 )
 from route_v2.pickup_action import ActionPackageExecutor, CompiledActionStep
 from route_v2.config import RouteV2Config, load_route_v2_config
+from route_v2.loop_strategy import LoopContext, prepare_build_plan
 from route_v2.pickup_vision import PickupPhase
 from route_v2.state_machine import RouteState, VisionRouteInput
 from route_v2.vision_worker import VisionTask
@@ -341,16 +342,12 @@ def test_camera_frame_signature_is_small_and_tracks_scene_changes():
     assert _frame_signature(image) != signature
 
 
-def test_orange_runtime_and_restarted_search_both_start_left(monkeypatch):
-    import run_route_v2
+def _orange_vision_runtime():
+    """A RouteVisionRuntime carrying only what `_select`'s orange path touches.
 
-    selected_directions = []
-
-    class PickupController:
-        def __init__(self, *args, initial_search, **kwargs):
-            selected_directions.append(initial_search)
-
-    monkeypatch.setattr(run_route_v2, "PickupVisionController", PickupController)
+    Built with `__new__` on purpose: the real constructor starts a camera and a
+    worker thread, and neither is in play for the sweep-direction decision.
+    """
     runtime = RouteVisionRuntime.__new__(RouteVisionRuntime)
     runtime.clock = lambda: 0.0
     runtime.config = _visual_route_config()
@@ -366,8 +363,30 @@ def test_orange_runtime_and_restarted_search_both_start_left(monkeypatch):
     runtime._pickup_baseline_cm = None
     runtime._orange_search_origin_cm = None
     runtime._orange_origin_state = None
+    runtime._orange_visit_count = 0
     runtime._purple_target_slot = None
     runtime._purple_search_hint = None
+    return runtime
+
+
+def _leave_the_orange_area(runtime):
+    """Select a task that is not the orange pickup, so the next orange selection
+    is a NEW visit -- the same test `_select` uses to re-latch the visit origin."""
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.BUILD_OCCUPANCY, RouteState.BUILD_AREA, 0.0)
+
+
+def test_orange_runtime_and_restarted_search_both_start_left(monkeypatch):
+    import run_route_v2
+
+    selected_directions = []
+
+    class PickupController:
+        def __init__(self, *args, initial_search, **kwargs):
+            selected_directions.append(initial_search)
+
+    monkeypatch.setattr(run_route_v2, "PickupVisionController", PickupController)
+    runtime = _orange_vision_runtime()
 
     runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 10.0)
     runtime.restart_pickup_search(absolute_lateral_cm=12.0)
@@ -387,11 +406,50 @@ def test_orange_runtime_and_restarted_search_both_start_left(monkeypatch):
     assert runtime._orange_search_origin_cm == 10.0
 
     # Leaving the area and coming back IS a new visit, and latches again.
-    runtime._task = VisionTask.NONE
-    runtime._select(VisionTask.BUILD_OCCUPANCY, RouteState.BUILD_AREA, 172.5)
-    runtime._task = VisionTask.NONE
+    _leave_the_orange_area(runtime)
     runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 200.0)
     assert runtime._orange_search_origin_cm == 200.0
+
+
+def test_later_visits_to_the_orange_area_start_their_sweep_on_the_right(monkeypatch):
+    """「第一次往左找 后面两次往右边找」.
+
+    Visits, not grabs.  The operator's round reaches 取物区1 once per structure --
+    「到J3 左旋去取物区2 取一个紫色 到取物区1取两个橙色 到了搭建区 直接搭建三层 重复3次」
+    -- and after the first one the blocks are off the left side, so the sweep starts
+    at the right end instead of crossing the empty half first.  The in-visit
+    re-selections do NOT advance the count: a grab suspends the task and the tick
+    re-selects ORANGE_CLOSE, and that is still the same visit.
+    """
+    import run_route_v2
+
+    selected_directions = []
+
+    class PickupController:
+        def __init__(self, *args, initial_search, **kwargs):
+            selected_directions.append(initial_search)
+
+    monkeypatch.setattr(run_route_v2, "PickupVisionController", PickupController)
+    runtime = _orange_vision_runtime()
+
+    # Visit 1 -- the re-selection in the middle is the second grab, same visit.
+    runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 0.0)
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 30.0)
+    assert runtime._orange_visit_count == 1
+
+    # Visit 2 -- right from here on.
+    _leave_the_orange_area(runtime)
+    runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 60.0)
+    assert runtime._orange_visit_count == 2
+
+    # Visit 3 -- right too, and the post-grab restart of that visit agrees.
+    _leave_the_orange_area(runtime)
+    runtime._select(VisionTask.ORANGE_CLOSE, RouteState.PICKUP_2_VISION_ONLY, 90.0)
+    runtime.restart_pickup_search(absolute_lateral_cm=95.0)
+
+    assert runtime._orange_visit_count == 3
+    assert selected_directions == ["left", "left", "right", "right", "right"]
 
 
 @pytest.mark.parametrize(
@@ -630,6 +688,72 @@ def test_started_pickup_action_advances_while_vision_is_suspended():
     assert runtime.suspend_calls == 1
     assert chassis.commands == [("V", -20, 0, 0)]
     assert runner.machine.state is RouteState.PICKUP_VISION_ONLY
+
+
+class _ScriptedBuildExecutor:
+    """An action executor that finishes each package on its own first step.
+
+    `set_action` is the whole point of the fake.  Only an executor that HAS it
+    takes the BUILD_ACTION branch in `RouteRunner.tick` that drives
+    `loop_context.build_plan`, and until 2026-10-02 no build plan ever held more
+    than one action, so the "there is a second package" half of that branch had
+    never run.
+    """
+
+    def __init__(self):
+        self.actions = []
+        self.current = None
+        self._steps = 0
+
+    def reset(self):
+        self.current = None
+        self._steps = 0
+
+    def set_action(self, name):
+        self.current = name
+        self.actions.append(name)
+        self._steps = 0
+
+    def step(self, **_kwargs):
+        self._steps += 1
+        return SimpleNamespace(
+            done=self._steps >= 1, fault=False,
+            metadata={"selected_action": self.current},
+            chassis_active=False, suction=None, distance_timeout=None,
+            chassis_distance=None, chassis_velocity=None, chassis_stop=False,
+        )
+
+
+def test_build_action_runs_both_packages_of_the_one_visit_plan():
+    """「先用吸盘和右边的搭建两层 再直接使用左边紫色封顶」 -- two packages, ONE visit.
+
+    The runner drives a multi-action plan as reset -> action -> reset -> action,
+    and both `apply_build_action` calls have to land: the base's
+    `consume(orange=2)` AND the cap's `consume(purple=1)`.  Getting only the first
+    would leave the car holding a purple it has already placed.
+    """
+    executor = _ScriptedBuildExecutor()
+    runner = RouteRunner(
+        _visual_route_config(), _VisionTestChassis(), _VisionTestLine(),
+        vision_runtime=_PickupReadyRuntime(), build_action=executor, clock=lambda: 0,
+    )
+    runner._last_intent_kind = "stop"
+    runner.machine.loop_context = LoopContext(purple_count=1, orange_count=2)
+    assert prepare_build_plan(runner.machine.loop_context) == (
+        "BUILD_BASE", "PLACE_PURPLE")
+    runner.machine._enter(RouteState.BUILD_ACTION, 0)
+
+    for tick in range(4):
+        runner.tick(float(tick))
+
+    assert executor.actions == ["RESET", "BUILD_BASE", "RESET", "PLACE_PURPLE"]
+    inventory = runner.machine.loop_context
+    assert inventory.orange_count_actual == 0
+    assert inventory.has_purple is False
+    assert inventory.building_count == 1
+    assert inventory.cap_count == 1
+    assert inventory.build_waiting_for_purple is False
+    assert runner.machine.state is RouteState.BUILD_BACK_TO_LINE
 
 
 class _RouteArmTransport:

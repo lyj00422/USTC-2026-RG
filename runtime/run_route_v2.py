@@ -57,6 +57,15 @@ def _frame_signature(image) -> bytes | None:
     return bytes((sampled >> 4).astype("uint8").ravel())
 
 
+# From which visit to the ORANGE area the pickup's first sweep goes RIGHT instead
+# of LEFT.  Operator, 2026-10-02: 「取物区1改成第一次往左找 后面两次往右边找」 -- the
+# FIRST visit sweeps left, and both of the other two sweep right, because the first
+# one has taken the blocks off that side by then.  The sweep is still two-sided and
+# bounded either way; this only changes which end it starts from, so a miss costs a
+# sweep rather than a grab.  Three visits is the whole round (「重复3次」).
+_ORANGE_RIGHT_FIRST_VISIT = 2
+
+
 def _orange_return_direction(net_lateral_cm: float) -> int:
     """Return opposite orange net movement; positive lateral is left."""
     if net_lateral_cm > 0:
@@ -160,6 +169,10 @@ class RouteVisionRuntime:
         # is one continuous run of PICKUP_2_VISION_ONLY, and the latch below
         # keys on this rather than on the task changing -- see `_select`.
         self._orange_origin_state: RouteState | None = None
+        # How many times this run has ENTERED the orange area.  Counted in `_select`
+        # on the same test the origin latch above uses, and read by `_first_look`
+        # to pick the sweep direction -- see `_ORANGE_RIGHT_FIRST_VISIT`.
+        self._orange_visit_count = 0
         # The purple block the route is going for, by the state machine's own
         # rule (loop_strategy.choose_purple_slot), decided at J3.  Kept here so
         # the return hunt's direction cannot disagree with the pickup.
@@ -226,6 +239,21 @@ class RouteVisionRuntime:
             config.seek_line_min_black_probes <= probes < 8
         )
 
+    def _first_look(self, area: str) -> str:
+        """Which way this pickup's first sweep goes.
+
+        The orange area's answer counts VISITS, not grabs: 「取物区1改成第一次往左找
+        后面两次往右边找」 -- and the operator's round is 「到J3 左旋去取物区2 取一个紫色
+        到取物区1取两个橙色 到了搭建区 直接搭建三层 重复3次」, so the three visits are
+        the three structures: the first sweeps left, and the two after it start on
+        the right, where the blocks still are.  Purple answers "right"; `_select`
+        overrides it with the prescan's own slot.
+        """
+        if area != "orange":
+            return "right"
+        return ("right" if self._orange_visit_count >= _ORANGE_RIGHT_FIRST_VISIT
+                else "left")
+
     def _select(self, task: VisionTask, state: RouteState,
                 absolute_lateral_cm: float | None) -> None:
         if task is self._task:
@@ -248,6 +276,13 @@ class RouteVisionRuntime:
             else:
                 height, width = snapshot.image.shape[:2]
                 frame_size = (width, height)
+            if area == "orange" and state is not self._orange_origin_state:
+                # A NEW visit to the orange area.  Evaluated HERE, before the origin
+                # latch below writes `_orange_origin_state`, so the two agree on
+                # which task selection opens a visit: the action packages suspend
+                # this task after every grab and the tick re-selects it, and those
+                # re-selections are the same visit.
+                self._orange_visit_count += 1
             # Which block the car goes for is already known (the prescan slot), so
             # the pickup's FIRST look goes straight at it instead of sweeping.
             #   Operator, 2026-09-22 night: "只有一个紫色在左边 就立马去左边取".
@@ -255,7 +290,7 @@ class RouteVisionRuntime:
             # on region counts rather than a confirmed centre, and the old
             # `hint or "right"` default is what sent the first sweep right past a
             # left-hand block in run 20260922_214120.
-            first_look = "left" if area == "orange" else "right"
+            first_look = self._first_look(area)
             if area == "purple":
                 first_look = ({1: "left", 2: "center", 3: "right"}.get(
                     self._purple_target_slot) or self._purple_search_hint or "right")
@@ -662,7 +697,9 @@ class RouteVisionRuntime:
             area_cfg,
             profile,
             frame_size=frame_size,
-            initial_search="left" if self._pickup_area == "orange" else "right",
+            # Same rule as `_select`, so the post-grab restart of a third VISIT
+            # does not send the second grab's sweep back to the spent left side.
+            initial_search=self._first_look(self._pickup_area),
         )
         if absolute_lateral_cm is not None:
             self._pickup_baseline_cm = absolute_lateral_cm
