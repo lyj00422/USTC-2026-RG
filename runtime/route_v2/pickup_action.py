@@ -223,7 +223,19 @@ class ActionPackageExecutor:
         arm,
         *,
         ack_timeout_s: float = 1.0,
-        distance_timeout_s: float = 10.0,
+        # 10.0 -> 5.0 on 2026-10-01, at the operator's request: 「吸橙色到右边的时候
+        # 到槽内要放的时候 有长时间的停顿」.  Measured, that pause is NOT a
+        # designed hold -- the deposit steps themselves take 0.11-0.37 s -- it is
+        # this deadline running out when a `D` is lost (the .out says
+        # `ACTION D 3 0 0 20 reported no DONE`).  10 s of standing still is what the
+        # operator sees.
+        #
+        # 5.0 is still ~2x the longest move any package makes: the biggest is
+        # orange_left's `D +17`, measured at ~2.4 s.  The reason this must stay
+        # comfortably above the real duration is recorded below -- a 2 s deadline was
+        # once SHORTER than the moves and cut them short, which the operator read as
+        # 「抓取的后退总是执行没成功」.
+        distance_timeout_s: float = 5.0,
         suction_settle_s: float = 0.0,
         arm_lift_settle_s: float = 0.0,
         arm_move_settle_s: float = 0.0,
@@ -531,9 +543,32 @@ class ActionPackageExecutor:
                 # arm moved".  Every build package opens by walking the arm to
                 # the layer it is about to place on, and that approach is the
                 # one the operator is watching.
+                # Was `servo_id == arm_lift_servo_id` only, which quieted the
+                # 大臂 and nothing else.  A build package walks 小臂/腕部 to a
+                # layer in the same way (2026-10-01: id 2 1800->2000 and id 3
+                # 1700->2000, each as two back-to-back segments), and those ran
+                # with no hold at all between them.  Operator, 2026-10-01:
+                # 「同个舵机多段调节参数时要停顿一下」.
+                #
+                # "Multi-segment" is read literally: the NEXT step commands the
+                # SAME servo again.  That is the hold the operator is asking for
+                # -- between two bites of one walk -- and it deliberately does
+                # NOT quiet a servo's ordinary single moves, which would add a
+                # dead second to every step of every build package.
+                #
+                # Decided here, at ISSUE time: `self._index` still points at
+                # `current`, and by the time the hold is honoured the index has
+                # moved past it.
+                _next_step = (self.steps[self._index + 1]
+                              if self._index + 1 < len(self.steps) else None)
+                _more_segments = (
+                    _next_step is not None
+                    and _next_step.kind == "servo"
+                    and _next_step.servo_id == current.servo_id
+                )
                 self._arm_move_pending = (
                     self.arm_move_settle_s > 0
-                    and current.servo_id == self.arm_lift_servo_id
+                    and (current.servo_id == self.arm_lift_servo_id or _more_segments)
                 )
                 self._last_servo_position[current.servo_id] = current.position
                 self.arm.servo(current.servo_id, current.position, current.time_ms)

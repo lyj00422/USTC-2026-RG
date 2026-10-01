@@ -32,7 +32,7 @@
     },
     "build_base": {
       "path": "build_base_latest",
-      "name": "搭两层",
+      "name": "从吸盘和右侧搭两层",
       "source": "local-materials/new-pkgs-20260929/build_base_latest",
       "window_required": false
     },
@@ -44,25 +44,25 @@
     },
     "top_right_purple": {
       "path": "top_right_purple_latest",
-      "name": "右侧加左侧搭3，4",
+      "name": "从右侧和左侧吸橙色和紫色搭三四层",
       "source": "local-materials/new-pkgs-20260929/top_right_purple_latest",
       "window_required": false
     },
     "top_suction_purple": {
       "path": "top_suction_purple_latest",
-      "name": "吸盘加左侧搭3，4层",
+      "name": "从吸盘和左侧吸橙色和紫色搭三四层",
       "source": "local-materials/new-pkgs-20260929/top_suction_purple_latest",
       "window_required": false
     },
     "build_three": {
       "path": "build_three_latest",
-      "name": "搭三层橙色",
+      "name": "从吸盘右侧左侧搭建三个橙色",
       "source": "local-materials/new-pkgs-20260929/build_three_latest",
       "window_required": false
     },
     "build_two": {
       "path": "build_two_latest",
-      "name": "搭两层橙色",
+      "name": "从左侧和右边搭两层",
       "source": "local-materials/new-pkgs-20260929/build_two_latest",
       "window_required": false
     },

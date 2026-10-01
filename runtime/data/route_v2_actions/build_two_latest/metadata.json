@@ -1,0 +1,46 @@
+{
+  "name": "从左侧和右边搭两层",
+  "slug": "从左侧和右边搭两层",
+  "index": 1,
+  "session_id": "动作包_20261001_231155",
+  "captured_at": "2026-10-01T15:18:13.588392+00:00",
+  "files": {
+    "action": "action.json",
+    "camera": "camera.jpg",
+    "camera_zone": null,
+    "zones": "zones.json",
+    "chassis": "chassis.json",
+    "arm": "arm.json"
+  },
+  "zones": [],
+  "step_count": 54,
+  "line_status": {
+    "connected": true,
+    "state": "FOLLOWING",
+    "error": null,
+    "raw": ":0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:9#$F,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:\u0010,x2:0,83:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x280,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,x2:0,x3:0,x4:0,x5:0,x6:1,x7:1,x8:1#$D,x1:0,",
+    "device": "/dev/ttyAMA0",
+    "transport": "pigpio_soft_uart",
+    "sensor_mask": 7,
+    "sensors": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1
+    ],
+    "line_error": -0.39999999999999997,
+    "line_lost": false,
+    "intersection": "none",
+    "timestamp_ms": 448954,
+    "rx_gpio": 24,
+    "tx_gpio": 23,
+    "baudrate": 115200,
+    "active_level": 0,
+    "request_attempts": 1,
+    "malformed_frames": 2403
+  }
+}

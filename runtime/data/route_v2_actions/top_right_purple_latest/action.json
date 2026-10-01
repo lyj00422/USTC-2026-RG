@@ -1,109 +1,67 @@
 {
-  "name": "右侧加左侧搭3，4",
+  "name": "从右侧和左侧吸橙色和紫色搭三四层",
   "named": true,
   "protocol": "RG-ARM-1",
-  "started_at": "2026-09-26T15:52:21.512520+00:00",
+  "started_at": "2026-10-01T14:00:50.118680+00:00",
   "steps": [
     {
       "kind": "SERVO",
       "id": 0,
       "position": 1020,
       "time_ms": 500,
-      "timestamp": "2026-09-26T15:52:30.902901+00:00"
+      "timestamp": "2026-10-01T14:00:54.072983+00:00"
     },
     {
       "kind": "SERVO",
       "id": 3,
       "position": 700,
       "time_ms": 500,
-      "timestamp": "2026-09-26T15:52:34.702022+00:00"
+      "timestamp": "2026-10-01T14:00:57.212493+00:00"
     },
     {
       "kind": "SERVO",
       "id": 1,
       "position": 1200,
       "time_ms": 500,
-      "timestamp": "2026-09-26T15:52:39.154100+00:00"
+      "timestamp": "2026-10-01T14:01:01.735281+00:00"
     },
     {
       "kind": "SUCTION",
       "enabled": true,
-      "timestamp": "2026-09-26T15:52:40.155124+00:00"
+      "timestamp": "2026-10-01T14:01:03.783819+00:00"
     },
     {
       "kind": "SERVO",
       "id": 1,
       "position": 1520,
       "time_ms": 500,
-      "timestamp": "2026-09-26T15:52:43.833241+00:00"
-    },
-    {
-      "kind": "SERVO",
-      "id": 3,
-      "position": 1500,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:52:49.545481+00:00"
+      "timestamp": "2026-10-01T14:01:10.211796+00:00"
     },
     {
       "kind": "SERVO",
       "id": 3,
       "position": 1400,
       "time_ms": 500,
-      "timestamp": "2026-09-26T15:52:58.973522+00:00"
+      "timestamp": "2026-10-01T14:01:17.050154+00:00"
     },
     {
       "kind": "SERVO",
       "id": 0,
       "position": 1840,
       "time_ms": 500,
-      "timestamp": "2026-09-26T15:53:11.191198+00:00"
-    },
-    {
-      "kind": "CHASSIS",
-      "command": "stop",
-      "timestamp": "2026-09-26T15:53:13.738725+00:00"
-    },
-    {
-      "kind": "CHASSIS",
-      "command": "velocity",
-      "vx": -20,
-      "vy": 0,
-      "wz": 0,
-      "timestamp": "2026-09-26T15:53:14.239958+00:00"
-    },
-    {
-      "kind": "CHASSIS",
-      "command": "stop",
-      "timestamp": "2026-09-26T15:53:15.087260+00:00"
-    },
-    {
-      "kind": "CHASSIS",
-      "command": "stop",
-      "timestamp": "2026-09-26T15:53:15.465195+00:00"
-    },
-    {
-      "kind": "SERVO",
-      "id": 1,
-      "position": 1400,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:53:20.739599+00:00"
+      "timestamp": "2026-10-01T14:01:28.790862+00:00"
     },
     {
       "kind": "SERVO",
       "id": 2,
       "position": 1950,
       "time_ms": 500,
-      "timestamp": "2026-09-26T15:53:26.808592+00:00"
-    },
-    {
-      "kind": "SUCTION",
-      "enabled": false,
-      "timestamp": "2026-09-26T15:53:31.166369+00:00"
+      "timestamp": "2026-10-01T14:01:55.099576+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "stop",
-      "timestamp": "2026-09-26T15:53:32.508341+00:00"
+      "timestamp": "2026-10-01T14:01:57.243700+00:00"
     },
     {
       "kind": "CHASSIS",
@@ -111,106 +69,105 @@
       "vx": -20,
       "vy": 0,
       "wz": 0,
-      "timestamp": "2026-09-26T15:53:32.881757+00:00"
+      "timestamp": "2026-10-01T14:01:57.858838+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "stop",
-      "timestamp": "2026-09-26T15:53:33.496629+00:00"
+      "timestamp": "2026-10-01T14:01:58.474052+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": -20,
+      "vy": 0,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:01:59.625303+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "stop",
-      "timestamp": "2026-09-26T15:53:34.010437+00:00"
+      "timestamp": "2026-10-01T14:01:59.640173+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 2,
-      "position": 1500,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:53:41.949898+00:00"
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": -20,
+      "vy": 0,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:02:00.635932+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 0,
-      "position": 630,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:53:47.883513+00:00"
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:02:00.813905+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 3,
-      "position": 700,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:53:55.073687+00:00"
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:02:01.197581+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 1,
-      "position": 1200,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:53:58.714208+00:00"
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": 0,
+      "vy": 20,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:02:02.943979+00:00"
     },
     {
-      "kind": "SUCTION",
-      "enabled": true,
-      "timestamp": "2026-09-26T15:54:00.333947+00:00"
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:02:03.009239+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 1,
-      "position": 1520,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:54:03.573611+00:00"
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": 0,
+      "vy": 20,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:02:04.964645+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 3,
-      "position": 1400,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:54:07.331581+00:00"
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:02:05.105241+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 0,
-      "position": 1840,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:54:10.983839+00:00"
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:02:05.876956+00:00"
     },
     {
-      "kind": "SERVO",
-      "id": 3,
-      "position": 950,
-      "time_ms": 500,
-      "timestamp": "2026-09-26T15:54:29.807235+00:00"
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:02:05.963045+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "distance",
-      "forward_cm": 10,
+      "forward_cm": -4,
       "right_cm": 0,
       "rotate_deg": 0,
       "speed": 20
     },
     {
       "kind": "CHASSIS",
-      "command": "stop",
-      "timestamp": "2026-09-26T15:54:34.091279+00:00"
-    },
-    {
-      "kind": "CHASSIS",
-      "command": "stop",
-      "timestamp": "2026-09-26T15:54:35.214586+00:00"
+      "command": "distance",
+      "forward_cm": 3,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
     },
     {
       "kind": "SUCTION",
       "enabled": false,
-      "timestamp": "2026-09-26T15:54:36.539483+00:00"
+      "timestamp": "2026-10-01T14:02:07.923009+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "stop",
-      "timestamp": "2026-09-26T15:54:37.646877+00:00"
+      "timestamp": "2026-10-01T14:02:09.501528+00:00"
     },
     {
       "kind": "CHASSIS",
@@ -218,24 +175,225 @@
       "vx": -20,
       "vy": 0,
       "wz": 0,
-      "timestamp": "2026-09-26T15:54:38.195839+00:00"
+      "timestamp": "2026-10-01T14:02:10.134376+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "stop",
-      "timestamp": "2026-09-26T15:54:39.384076+00:00"
+      "timestamp": "2026-10-01T14:02:10.708618+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "stop",
-      "timestamp": "2026-09-26T15:54:40.918224+00:00"
+      "timestamp": "2026-10-01T14:02:11.043438+00:00"
     },
     {
       "kind": "CHASSIS",
       "command": "stop",
-      "timestamp": "2026-09-26T15:54:41.270843+00:00"
+      "timestamp": "2026-10-01T14:02:11.424841+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1500,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:02:18.375276+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 0,
+      "position": 630,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:02:27.854698+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 700,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:02:36.025049+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 1,
+      "position": 1200,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:02:41.384943+00:00"
+    },
+    {
+      "kind": "SUCTION",
+      "enabled": true,
+      "timestamp": "2026-10-01T14:02:42.996884+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 1,
+      "position": 1520,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:02:48.132165+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1400,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:02:51.011394+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 0,
+      "position": 1840,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:02:55.877210+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1000,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:03:02.341192+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:04.669102+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": 20,
+      "vy": 0,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:03:05.102297+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:06.098318+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:06.745584+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:07.738393+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": 0,
+      "vy": -20,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:03:08.754424+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:08.789047+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": 0,
+      "vy": -20,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:03:10.455173+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:10.512426+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:11.660022+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": 0,
+      "vy": -20,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:03:16.191131+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:16.330309+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:17.297877+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": -4,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 3,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
+      "kind": "SUCTION",
+      "enabled": false,
+      "timestamp": "2026-10-01T14:03:19.662265+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:20.913752+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "velocity",
+      "vx": -20,
+      "vy": 0,
+      "wz": 0,
+      "timestamp": "2026-10-01T14:03:21.519135+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:22.221515+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:22.222436+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "stop",
+      "timestamp": "2026-10-01T14:03:22.398314+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1400,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:03:26.775762+00:00"
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1500,
+      "time_ms": 500,
+      "timestamp": "2026-10-01T14:03:28.502294+00:00"
     }
   ],
   "zones": {},
-  "finished_at": "2026-09-26T15:54:44.297647+00:00"
+  "finished_at": "2026-10-01T14:03:30.372679+00:00"
 }

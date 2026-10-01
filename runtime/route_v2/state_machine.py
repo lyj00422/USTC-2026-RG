@@ -1713,13 +1713,16 @@ class RouteV2StateMachine:
 
             # ---- WHERE THIS VISIT BUILDS: ODOMETRY, NOT VISION (2026-10-01) ----
             # The N-th build position -- the N-th structure for a PLACEMENT, the
-            # N-th stack for a CAP -- is `build_right_step_cm * N` to the RIGHT of
-            # the pose the visit arrived at.  N is `skip + 1`, where `skip` is the
-            # counter the strategy already keeps (building_count for a placement,
-            # cap_count for a cap), so both cases are the same three lines:
+            # N-th stack for a CAP -- is
+            #
+            #     build_first_right_cm + build_right_step_cm * skip
+            #
+            # to the RIGHT of the pose the visit arrived at.  `skip` is the counter
+            # the strategy already keeps (building_count for a placement,
+            # cap_count for a cap), so both cases are the same two lines:
             #
             #     1st structure -> 5 cm     1st stack capped -> 5 cm
-            #     2nd structure -> 10 cm    2nd stack capped -> 10 cm
+            #     2nd structure -> 20 cm    2nd stack capped -> 20 cm
             #
             # Operator, 2026-10-01: 「第一栋就到搭建区右移5cm 第二栋右移10cm 第三栋15cm
             # ... 要封顶第一层就到了搭建区右移5cm 要封顶第二层就右移10cm」.
@@ -1765,7 +1768,8 @@ class RouteV2StateMachine:
                 # otherwise land straight in _build_begin_action and build.
                 self._build_slide_exhausted = True
                 return RouteIntent("stop", self.state)
-            self._build_target_cm = self.config.build_right_step_cm * (skip + 1)
+            self._build_target_cm = (self.config.build_first_right_cm
+                                     + self.config.build_right_step_cm * skip)
             if distance_cm < self._build_target_cm:
                 return self._build_slide_right(absolute_lateral_cm)
             intent = self._build_begin_action(now)

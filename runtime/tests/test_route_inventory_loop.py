@@ -82,6 +82,13 @@ def test_supply_exhaustion_is_the_only_empty_inventory_finish():
 # ---------------------------------------------------------------------------
 
 
+# The pitch is CONFIG, not a constant in this file: `build_right_step_cm` is the
+# one number the field tunes (它是「间距就是这个数」的那个数), so hard-coding it here
+# would make every pitch change a test rewrite instead of a config change.
+FIRST = RouteV2Config().build_first_right_cm   # 第 1 栋距到达位姿多远（起手）
+PITCH = RouteV2Config().build_right_step_cm    # 相邻两栋的间隔（步进）
+
+
 def _build_area_machine():
     machine = RouteV2StateMachine(RouteV2Config())
     machine._enter(RouteState.BUILD_AREA, 0.0)
@@ -133,7 +140,7 @@ def test_build_area_entry_tick_holds_before_trusting_its_inputs():
     assert machine._build_visit_origin_cm is None, "nothing latched on the entry tick"
 
 
-def test_build_area_first_structure_goes_five_cm_right():
+def test_build_area_first_structure_goes_one_pitch_right():
     """「第一栋就到搭建区右移5cm」.
 
     Right is NEGATIVE vy (positive strafes LEFT), the same convention every other
@@ -145,16 +152,16 @@ def test_build_area_first_structure_goes_five_cm_right():
     moving = _visit(machine, now=0.1, lateral_cm=0.0)
     assert moving.state is RouteState.BUILD_AREA
     assert moving.kind == "strafe" and moving.speed < 0, "must strafe right"
-    assert machine._build_target_cm == 5.0
+    assert machine._build_target_cm == FIRST
 
-    short = _visit(machine, now=0.2, lateral_cm=-4.99)
+    short = _visit(machine, now=0.2, lateral_cm=-(FIRST - 0.01))
     assert short.kind == "strafe", "one hundredth short is still short"
 
-    committed = _visit(machine, now=0.3, lateral_cm=-5.0)
+    committed = _visit(machine, now=0.3, lateral_cm=-FIRST)
     assert committed.state is RouteState.BUILD_ACTION
 
 
-def test_build_area_second_structure_goes_ten_cm_right():
+def test_build_area_second_structure_goes_two_pitches_right():
     """「第二栋右移10cm」: one structure already standing, so this one goes to
     position 2 -- 2 x build_right_step_cm from the arrival pose, not 5 + 5 from
     wherever the last visit happened to stop."""
@@ -164,16 +171,16 @@ def test_build_area_second_structure_goes_ten_cm_right():
 
     moving = _visit(machine, now=0.1, lateral_cm=0.0)
     assert moving.kind == "strafe" and moving.speed < 0
-    assert machine._build_target_cm == 10.0
+    assert machine._build_target_cm == FIRST + PITCH
 
-    short = _visit(machine, now=0.2, lateral_cm=-9.99)
+    short = _visit(machine, now=0.2, lateral_cm=-(FIRST + PITCH - 0.01))
     assert short.kind == "strafe"
 
-    committed = _visit(machine, now=0.3, lateral_cm=-10.0)
+    committed = _visit(machine, now=0.3, lateral_cm=-(FIRST + PITCH))
     assert committed.state is RouteState.BUILD_ACTION
 
 
-def test_build_area_third_structure_goes_fifteen_cm_right():
+def test_build_area_third_structure_goes_three_pitches_right():
     """「第三栋15cm」 -- the top of the range the strategy can ask for, and still an
     order of magnitude inside build_slide_max_cm."""
     machine = _place_machine()
@@ -181,9 +188,9 @@ def test_build_area_third_structure_goes_fifteen_cm_right():
     _visit(machine, now=0.0, lateral_cm=0.0)
 
     assert _visit(machine, now=0.1, lateral_cm=0.0).kind == "strafe"
-    assert machine._build_target_cm == 15.0
-    assert _visit(machine, now=0.2, lateral_cm=-14.0).kind == "strafe"
-    assert _visit(machine, now=0.3, lateral_cm=-15.0).state is RouteState.BUILD_ACTION
+    assert machine._build_target_cm == FIRST + 2 * PITCH
+    assert _visit(machine, now=0.2, lateral_cm=-(FIRST + 2 * PITCH - 1.0)).kind == "strafe"
+    assert _visit(machine, now=0.3, lateral_cm=-(FIRST + 2 * PITCH)).state is RouteState.BUILD_ACTION
 
 
 def test_build_area_cap_goes_to_the_same_position_as_the_stack_under_it():
@@ -197,19 +204,19 @@ def test_build_area_cap_goes_to_the_same_position_as_the_stack_under_it():
     first = _cap_machine(building_count=1, cap_count=0)
     _visit(first, now=0.0, lateral_cm=0.0)
     assert _visit(first, now=0.1, lateral_cm=0.0).kind == "strafe"
-    assert first._build_target_cm == 5.0
-    assert _visit(first, now=0.2, lateral_cm=-5.0).state is RouteState.BUILD_ACTION
+    assert first._build_target_cm == FIRST
+    assert _visit(first, now=0.2, lateral_cm=-FIRST).state is RouteState.BUILD_ACTION
     assert first.loop_context.build_plan == ("TOP_RIGHT_ORANGE_PURPLE",)
 
     second = _cap_machine(building_count=2, cap_count=1)
     _visit(second, now=0.0, lateral_cm=0.0)
     assert _visit(second, now=0.1, lateral_cm=0.0).kind == "strafe"
-    assert second._build_target_cm == 10.0
-    assert _visit(second, now=0.2, lateral_cm=-9.0).kind == "strafe"
-    assert _visit(second, now=0.3, lateral_cm=-10.0).state is RouteState.BUILD_ACTION
+    assert second._build_target_cm == FIRST + PITCH
+    assert _visit(second, now=0.2, lateral_cm=-(FIRST + PITCH - 1.0)).kind == "strafe"
+    assert _visit(second, now=0.3, lateral_cm=-(FIRST + PITCH)).state is RouteState.BUILD_ACTION
 
 
-def test_build_area_first_position_is_five_cm_for_any_plan():
+def test_build_area_first_position_is_one_pitch_for_any_plan():
     """A fresh process has an empty memory, so its first structure -- whatever the
     plan is -- goes to position 1.  The old `_build_first_right_cm` special case
     existed for exactly this; the general formula covers it with no special case,
@@ -219,8 +226,8 @@ def test_build_area_first_position_is_five_cm_for_any_plan():
     one._enter(RouteState.BUILD_AREA, 0.0)
     _visit(one, now=0.0, lateral_cm=0.0)
     assert _visit(one, now=0.1, lateral_cm=0.0).kind == "strafe"
-    assert one._build_target_cm == 5.0
-    assert _visit(one, now=0.2, lateral_cm=-5.0).state is RouteState.BUILD_ACTION
+    assert one._build_target_cm == FIRST
+    assert _visit(one, now=0.2, lateral_cm=-FIRST).state is RouteState.BUILD_ACTION
 
     three = RouteV2StateMachine(RouteV2Config())
     three.loop_context.record_orange()
@@ -229,8 +236,8 @@ def test_build_area_first_position_is_five_cm_for_any_plan():
     three._enter(RouteState.BUILD_AREA, 0.0)
     _visit(three, now=0.0, lateral_cm=0.0)
     assert _visit(three, now=0.1, lateral_cm=0.0).kind == "strafe"
-    assert three._build_target_cm == 5.0
-    assert _visit(three, now=0.2, lateral_cm=-5.0).state is RouteState.BUILD_ACTION
+    assert three._build_target_cm == FIRST
+    assert _visit(three, now=0.2, lateral_cm=-FIRST).state is RouteState.BUILD_ACTION
 
 
 def test_build_area_with_nothing_to_build_goes_back_for_blocks():

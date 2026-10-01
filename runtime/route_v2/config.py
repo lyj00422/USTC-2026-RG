@@ -136,8 +136,8 @@ class RouteV2Config:
     #
     # Only the pickup catalogs get these.  The build packages keep 0.0, so their
     # timing is bit-for-bit what it was.
-    pickup_suction_settle_s: float = 1.0
-    pickup_arm_lift_settle_s: float = 1.0
+    pickup_suction_settle_s: float = 0.6
+    pickup_arm_lift_settle_s: float = 0.6
     # The hold inside a BUILD action.  Operator, 2026-09-29: 「搭建动作中 大臂会
     # 分步骤下移 所以在那样的情况下 大臂移动一次停顿1s」.
     #
@@ -878,7 +878,14 @@ class RouteV2Config:
     # THIS ONE NUMBER IS THE PITCH between neighbouring structures.  If they come
     # out too close together or too far apart on the field, change this and nothing
     # else.
-    build_right_step_cm: float = 5.0
+    #
+    # """起手""": 第 1 栋距到达位姿多远。**不是 0**：到达位姿是 330cm 那条腿停
+    # 下的地方，本身就留了一点余量，第 1 栋再往右 5cm 才是操作员要的位置。
+    build_first_right_cm: float = 5.0
+    #
+    # """步进""": 相邻两栋的**间隔**。第 N 栋 = first + step * (N-1)，所以
+    #     第 1 栋 5cm  第 2 栋 20cm  第 3 栋 35cm ...
+    build_right_step_cm: float = 20.0
     #
     # -- Everything below here is the VISION positioning, retired 2026-10-01 -----
     # KEPT, NOT DELETED: the vision path can be restored by uncommenting its block
@@ -919,7 +926,7 @@ class RouteV2Config:
     # Same class as the pickup areas' fine_speed (measured ~4 cm/s lateral).
     # Deliberately NOT the coarse/search speed: this is a positioning move that
     # has to stop on a vision reading, and stopping distance is what overshoots.
-    build_slide_speed: int = 12
+    build_slide_speed: int = 20
     # How much further right a PLACEMENT visit goes after the view first goes
     # clear, before it commits to the action.
     #
@@ -1190,6 +1197,8 @@ def load_route_v2_config(
         # One frame would let a single misdetected frame end the slide early and
         # build in the wrong place; the slide is cheap, so require a run of them.
         raise ValueError("build_slide_clear_frames must be at least 1")
+    if cfg.build_first_right_cm < 0:
+        raise ValueError("build_first_right_cm cannot be negative")
     if cfg.build_right_step_cm < 0:
         # The whole build-area pitch.  Zero would stack every structure on the
         # arrival pose; negative would send the car LEFT, into the leg it came in on.

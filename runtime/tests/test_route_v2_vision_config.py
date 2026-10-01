@@ -251,6 +251,9 @@ def test_orange_close_profile_encodes_video_calibrated_color_and_geometry():
     #   -> 0.55/0.65 (centre 768.0)   "使得抓取位置右移一点点（0.2）"
     #        -- the 0.2 was confirmed as 0.02 in person, hence 768.0 and not
     #        537.6.  Width stays 128 px.
+    #   -> 0.53/0.63 (centre 742.4)   2026-10-01 夜「橙色抓取 我需要抓取位置右移
+    #        一点 0.02」.  Same 0.02 step as before, same direction (smaller x =
+    #        grab further right); width still 128 px.
     # Under the alignment's sign convention (error = target_x - window centre,
     # negative drives LEFT) moving the centre RIGHT makes the car settle further
     # left relative to the block, so a grab that is too far LEFT is corrected by
@@ -260,7 +263,7 @@ def test_orange_close_profile_encodes_video_calibrated_color_and_geometry():
         profile.capture_window.top,
         profile.capture_window.right,
         profile.capture_window.bottom,
-    ) == pytest.approx((0.55, 0.42, 0.65, 0.88))
+    ) == pytest.approx((0.53, 0.42, 0.63, 0.88))
     assert profile.aspect_ratio.minimum == 0.45
     assert profile.aspect_ratio.maximum == 2.2
     assert profile.height_px.minimum == 350

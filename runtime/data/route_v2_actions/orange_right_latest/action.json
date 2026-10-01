@@ -33,7 +33,7 @@
     {
       "kind": "CHASSIS",
       "command": "distance",
-      "forward_cm": 3,
+      "forward_cm": 4,
       "right_cm": 0,
       "rotate_deg": 0,
       "speed": 20
