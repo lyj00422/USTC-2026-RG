@@ -847,6 +847,46 @@ class RouteV2Config:
     # margin here is large rather than marginal -- 60 s is roughly 3x the
     # simulator's model and 15x the measured speed.
     orange_direct_timeout_s: float = 60.0
+    # -- HOW FAR RIGHT THE CAR GOES BEFORE IT BUILDS (2026-10-01) ---------------
+    # PURE ODOMETRY.  The N-th build position -- the N-th structure for a
+    # PLACEMENT, the N-th stack for a CAP -- is this far to the RIGHT of the pose
+    # the visit arrived at:
+    #
+    #     offset_cm = build_right_step_cm * (skip + 1)
+    #
+    # where `skip` is the counter the strategy already keeps: building_count for a
+    # placement, cap_count for a cap.  Both give the SAME formula, which is the
+    # point -- there is no vision left in this decision:
+    #
+    #     1st structure -> 5 cm      1st stack capped -> 5 cm
+    #     2nd structure -> 10 cm     2nd stack capped -> 10 cm
+    #     3rd structure -> 15 cm     3rd stack capped -> 15 cm
+    #
+    # Operator, 2026-10-01: 「把视觉替换成距离 策略不变 但是搭建的时候不用避开方块什么的
+    # 第一栋就到搭建区右移5cm 第二栋右移10cm 第三栋15cm ... 要封顶第一层就到了搭建区右移
+    # 5cm 要封顶第二层就右移10cm」, and on the extra gap the vision path used to add
+    # after the view cleared: 「就是 5×N，不加」.
+    #
+    # WHY it replaced the vision: on run route_v2_full_20261001_085121 the third
+    # visit to the build area read "a blob is in view" on essentially every frame
+    # (`passed=0` for all 400 telemetry rows), so the car slid the whole
+    # build_slide_max_cm (measured lat -301.25) and then held STOP forever with
+    # `state: BUILD_AREA` and nothing at all in the .out -- indistinguishable from
+    # "still waiting".  Where the car builds is now a number the route commanded,
+    # not a reading it has to trust.
+    #
+    # THIS ONE NUMBER IS THE PITCH between neighbouring structures.  If they come
+    # out too close together or too far apart on the field, change this and nothing
+    # else.
+    build_right_step_cm: float = 5.0
+    #
+    # -- Everything below here is the VISION positioning, retired 2026-10-01 -----
+    # KEPT, NOT DELETED: the vision path can be restored by uncommenting its block
+    # in state_machine.py's BUILD_AREA and putting the
+    # `RouteState.BUILD_AREA: VisionTask.BUILD_OCCUPANCY` line back into
+    # run_route_v2.vision_task_for_state().  Nothing reads any of these while the
+    # distance rule above is in force.
+    #
     # BUILD_AREA slides right past ONE ORANGE BLOB PER FINISHED BUILDING, then acts
     # in the space beyond them.  The number of blobs to pass is
     # loop_context.cap_count -- the route's own count of how many buildings it has
@@ -1150,6 +1190,10 @@ def load_route_v2_config(
         # One frame would let a single misdetected frame end the slide early and
         # build in the wrong place; the slide is cheap, so require a run of them.
         raise ValueError("build_slide_clear_frames must be at least 1")
+    if cfg.build_right_step_cm < 0:
+        # The whole build-area pitch.  Zero would stack every structure on the
+        # arrival pose; negative would send the car LEFT, into the leg it came in on.
+        raise ValueError("build_right_step_cm cannot be negative")
     if cfg.build_slide_max_cm <= 0:
         raise ValueError("build_slide_max_cm must be positive")
     if not 1 <= abs(cfg.build_slide_speed) <= 100:

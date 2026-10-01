@@ -76,7 +76,15 @@ def vision_task_for_state(state: RouteState) -> VisionTask:
         RouteState.PICKUP_2_SEEK_LINE: VisionTask.TAG4,
         RouteState.PICKUP_2_TAG_LINE_TAKEOVER: VisionTask.TAG4,
         RouteState.PICKUP_2_VISION_ONLY: VisionTask.ORANGE_CLOSE,
-        RouteState.BUILD_AREA: VisionTask.BUILD_OCCUPANCY,
+        # RETIRED 2026-10-01 -- comment in, not deleted:
+        # RouteState.BUILD_AREA: VisionTask.BUILD_OCCUPANCY,
+        #
+        # 搭建区现在靠里程定位（`build_right_step_cm`），完全不跑视觉任务。这不只是
+        # 省事：`observe()` 里 `task_active = task is not VisionTask.NONE`，而
+        # vision_pending / vision_hold / camera_fault **全部**挂在这个判断上——映射
+        # 没了，搭建区就不再等新帧、也不会因为摄像头在那里坏掉而 fault 整趟。这正是
+        # 旧映射还剩下的两项代价。检测器、它的 profile 和 observe() 里那个分支都留着，
+        # 所以还原就是把这行放回来。
     }.get(state, VisionTask.NONE)
 
 
@@ -1645,6 +1653,11 @@ class RouteRunner:
         return {
             "cap_count": getattr(context, "cap_count", None),
             "building_count": getattr(context, "building_count", None),
+            # Where this visit is aiming, and how far right that is: the live
+            # odometry rule (2026-10-01).  `target_cm` is latched when the visit
+            # commits to a plan, so a visit that never got that far reports None.
+            "step_cm": getattr(self.machine.config, "build_right_step_cm", None),
+            "target_cm": getattr(self.machine, "_build_target_cm", None),
             "blobs_passed": getattr(self.machine, "_build_blobs_passed", None),
             "slide_exhausted": getattr(self.machine, "_build_slide_exhausted", None),
             "cap_seek_exhausted": getattr(self.machine, "_build_cap_seek_exhausted", None),

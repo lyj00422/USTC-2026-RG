@@ -1,0 +1,38 @@
+{
+  "name": "拿紫色v1_有抓取窗口",
+  "named": true,
+  "protocol": "RG-ARM-1",
+  "started_at": "2026-09-17T14:18:13.681440+00:00",
+  "steps": [
+    {"kind": "SERVO", "id": 3, "position": 1750, "time_ms": 500, "timestamp": "2026-09-17T14:19:16.247004+00:00"},
+    {"kind": "SERVO", "id": 2, "position": 1750, "time_ms": 500, "timestamp": "2026-09-17T14:19:17.341320+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": -20, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:22.117451+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:22.286692+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": -20, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:22.893860+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:22.959310+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": -20, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:23.551330+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:23.696957+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": -20, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:24.316849+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:24.435843+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": -20, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:25.029150+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:25.297548+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:25.814202+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:25.961518+00:00"},
+    {"kind": "SERVO", "id": 1, "position": 750, "time_ms": 500, "timestamp": "2026-09-17T14:19:33.996562+00:00"},
+    {"kind": "SERVO", "id": 3, "position": 1650, "time_ms": 500, "timestamp": "2026-09-17T14:19:47.765843+00:00"},
+    {"kind": "SERVO", "id": 2, "position": 1600, "time_ms": 500, "timestamp": "2026-09-17T14:19:54.549462+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": 22, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:58.361012+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:58.450832+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": 22, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:59.121002+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:59.208510+00:00"},
+    {"kind": "CHASSIS", "command": "velocity", "vx": 22, "vy": 0, "wz": 0, "timestamp": "2026-09-17T14:19:59.797411+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:19:59.979964+00:00"},
+    {"kind": "CHASSIS", "command": "stop", "timestamp": "2026-09-17T14:20:00.658668+00:00"},
+    {"kind": "SUCTION", "enabled": true, "timestamp": "2026-09-17T14:20:03.180442+00:00"},
+    {"kind": "SERVO", "id": 1, "position": 1500, "time_ms": 500, "timestamp": "2026-09-17T14:20:11.073600+00:00"}
+  ],
+  "zones": {
+    "capture": {"x": 606.6865671641791, "y": 340.65671641791045, "width": 80.59701492537317, "height": 77.37313432835822}
+  },
+  "finished_at": "2026-09-17T14:20:21.147558+00:00"
+}

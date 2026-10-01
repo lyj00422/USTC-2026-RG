@@ -357,6 +357,11 @@ class RouteV2StateMachine:
         self._build_first_visit_done = False
         self._build_place_clear_at_cm: float | None = None
         self._build_slide_exhausted = False
+        #   _build_target_cm is where THIS visit is aiming, right of the arrival pose
+        #     -- build_right_step_cm * (skip + 1), latched when the visit commits to
+        #     a plan.  Reported in the telemetry so a field log says what the car was
+        #     trying to reach, not just where it ended up.
+        self._build_target_cm: float | None = None
         self._build_align_frames = 0
         #   _build_find_frames counts consecutive frames that read as a usable find;
         #     the cap only starts centring once it reaches build_find_confirm_frames.
@@ -447,6 +452,7 @@ class RouteV2StateMachine:
         self._build_visit_origin_cm = None
         self._build_place_clear_at_cm = None
         self._build_slide_exhausted = False
+        self._build_target_cm = None
         self._build_align_frames = 0
         self._build_find_frames = 0
         self._build_cap_seek_origin_cm = None
@@ -1687,15 +1693,17 @@ class RouteV2StateMachine:
             #
             # `wait`, not `stop`: the simulator treats a stop as "the route has come
             # to rest short of the end" and gives up there, which is right for a
-            # settled car and wrong for a one-tick hold -- with BUILD_AREA excluded
-            # from that test instead, a config with no vision (build_block_visible
-            # stays None, so the state can only ever hold) span until the
-            # simulation timed out.  On the chassis the two are the same command.
+            # settled car and wrong for a one-tick hold.  On the chassis the two are
+            # the same command.
+            #
+            # The vision task no longer changes here and BUILD_AREA no longer runs
+            # one at all (2026-10-01, see below), but the hold stays: whatever the
+            # runner sampled on the previous tick belongs to the 330 cm leg, and the
+            # tick after this one is the first whose odometer reading is this
+            # state's own.
             if now <= self._state_started:
                 return RouteIntent("wait", self.state,
                                    wait_s=self.config.poll_period_s)
-            if visual.build_block_visible is None:
-                return RouteIntent("stop", self.state)
             if absolute_lateral_cm is not None and self._build_visit_origin_cm is None:
                 # ABSOLUTE, not lateral_cm: the runner re-baselines the leg-relative
                 # odometer on every state change, so only the absolute projection
@@ -1703,227 +1711,357 @@ class RouteV2StateMachine:
                 # how far the visit moved the car sideways.
                 self._build_visit_origin_cm = absolute_lateral_cm
 
-            # THE RUN'S FIRST ARRIVAL BUILDS WHERE IT STANDS.  Operator,
-            # 2026-09-29: 「第一次搭建 到了搭建区直接执行搭建动作」.
+            # ---- WHERE THIS VISIT BUILDS: ODOMETRY, NOT VISION (2026-10-01) ----
+            # The N-th build position -- the N-th structure for a PLACEMENT, the
+            # N-th stack for a CAP -- is `build_right_step_cm * N` to the RIGHT of
+            # the pose the visit arrived at.  N is `skip + 1`, where `skip` is the
+            # counter the strategy already keeps (building_count for a placement,
+            # cap_count for a cap), so both cases are the same three lines:
             #
-            # Everything below exists to place the car correctly relative to
-            # structures that are ALREADY STANDING.  On the first arrival there are
-            # none -- the build area is empty, so a slide has nothing to find and
-            # can only carry the car away from the pose the 330 cm leg was tuned to
-            # leave it in, which is a pose the operator has already set by hand.
+            #     1st structure -> 5 cm     1st stack capped -> 5 cm
+            #     2nd structure -> 10 cm    2nd stack capped -> 10 cm
             #
-            # The origin above is taken first, so BUILD_BACK_TO_LINE still gets its
-            # answer to "how far did this visit move the car sideways" -- the answer
-            # is nowhere, which is a real answer: the hunt then runs on its margin
-            # alone.
+            # Operator, 2026-10-01: 「第一栋就到搭建区右移5cm 第二栋右移10cm 第三栋15cm
+            # ... 要封顶第一层就到了搭建区右移5cm 要封顶第二层就右移10cm」.
             #
-            # `wait`, not a fall-through into the BUILD_ACTION block below: the rest
-            # of THIS block is the slide, and it would otherwise run on a tick whose
-            # state has already changed.  One tick of `wait` also means BUILD_ACTION
-            # is first evaluated against a fresh reading rather than this tick's
-            # BUILD_OCCUPANCY one.
-            if not self._build_first_visit_done:
-                # Latched before the plan is prepared: this WAS the first visit
-                # whatever it turns out to be carrying, and the next arrival is the
-                # second one.
-                self._build_first_visit_done = True
-                intent = self._build_begin_action(now)
-                if intent is not None:
-                    return intent
-                return RouteIntent("wait", self.state,
-                                   wait_s=self.config.poll_period_s)
-
+            # There is deliberately NO vision here.  The detector used to decide
+            # this by counting blobs that left the view, and on run
+            # route_v2_full_20261001_085121 it answered "blob in view" on nearly
+            # every frame for 400 telemetry rows -- so the car slid the entire
+            # build_slide_max_cm and then held STOP, silently, with `state:
+            # BUILD_AREA` and nothing in the .out.  The retired block below is that
+            # code, kept whole so it can be restored.
+            #
+            # An empty plan is checked FIRST, before any move: a pickup round that
+            # came back with nothing must leave the car where the leg put it.  See
+            # _build_begin_action for why committing an empty plan used to fault the
+            # whole run (field, 20260929_203524: `unknown build action: RESET`).
             plan = build_plan_for_inventory(self.loop_context)
-            is_cap = bool(plan) and plan[0] in CAP_ACTIONS
-            # A placement must pass every building already standing.  On some
-            # arrivals the camera starts in the open space to their right, so
-            # there is no blob transition to count.  Keep a short empty-view
-            # debounce and then treat that known-empty arrival as already clear.
-            # A clipped blob remains occupied here: it may be the close face of
-            # a real building, and must leave the view before placement proceeds.
-            occupancy_visible = bool(visual.build_block_visible)
-
-            # One "building passed" = a blob that WAS in view has left it, held
-            # absent over build_slide_clear_frames so detector flicker cannot count
-            # as a building.  The car passes exactly loop_context.building_count of
-            # them: the buildings stand to the left of the free space and the car
-            # arrives from the left.
-            if occupancy_visible:
-                self._build_blob_seen = True
-                self._build_blob_absent_frames = 0
-                self._build_empty_frames = 0
-            elif self._build_blob_seen:
-                self._build_empty_frames = 0
-                self._build_blob_absent_frames += 1
-                if self._build_blob_absent_frames >= self.config.build_slide_clear_frames:
-                    self._build_blob_seen = False
-                    self._build_blob_absent_frames = 0
-                    self._build_blobs_passed += 1
-            else:
-                self._build_empty_frames += 1
-
-            # The ceiling latches, and a latched ceiling HOLDS: reaching it means the
-            # detector never let the car past the buildings the memory counts, which
-            # is a fault to look at on the field, not a place to drop two blocks.
-            if self._build_slide_exhausted or self._build_cap_seek_exhausted:
-                return RouteIntent("stop", self.state)
-
-            # With only orange (a placement) the car gets past EVERY building, so it
-            # ends up in the empty space beyond them.  With a purple (a cap) it only
-            # gets past the ones already capped, because the cap goes on the next
-            # stack that is still waiting.  Operator, 2026-09-24: 「只有橙色 要跳过
-            # 所有建筑」/「有紫色才要封顶 跳过已经封顶的」.
+            if not plan:
+                return self._build_begin_action(now) or RouteIntent(
+                    "wait", self.state, wait_s=self.config.poll_period_s)
+            is_cap = plan[0] in CAP_ACTIONS
             skip = (self.loop_context.cap_count if is_cap
                     else self.loop_context.building_count)
-
-            if is_cap:
-                # CAPPING.  Get past the finished buildings, then centre on the
-                # stack that is still waiting for its cap -- the cap goes on top of
-                # what the car is looking at, so it has to line up with it first.
-                #
-                # `build_center_error is None` with a blob in view means the centre
-                # is not known; sliding is the only way to change what the car is
-                # looking at, and the ceiling bounds that.
-                #
-                # A CLIPPED blob is not a find either, and this is the one that
-                # made a cap land on bare floor.  At the arrival pose the orange
-                # fills the frame: the accepted box spans the whole ROI, so its
-                # centroid lands on the frame centre and `build_center_error` reads
-                # ~0 -- the alignment test says "already centred" no matter where
-                # the car is.  Operator, 2026-09-30, on the view: 「第一次占满 右移
-                # 橙色丢出视野 空 然后又有橙色从右边进入视野 移动 橙色占满」.  Only a
-                # silhouette with space around it can be centred on.
-                #
-                # Gated on `skip > 0`, which is exactly "this cap goes on a stack
-                # the car has to FIND".  At `skip == 0` the cap goes on whatever is
-                # in front, so clipping is not consulted and the car caps where it
-                # stands -- the first arrival's job.
-                #
-                # DEBOUNCED over `build_find_confirm_frames`.  A single frame that
-                # reads as a find is not one: on 2026-09-30 the car had exactly one
-                # 0.3 s window of a usable silhouette at lat=-65.16 (clipped=False,
-                # centre_error=-0.12) and it flipped back to "clipped" before the
-                # align could hold -- then slid another 237 cm.  That is the same
-                # failure the pickup's own window verification guards against, with
-                # the same fix: require the reading to persist before acting on it.
-                # The car also holds still for those frames, which lets a mask that
-                # shreds under motion (that run's rejected-blob count swung 0..250
-                # per frame) settle before the reading is trusted.
-                found = (self._build_blobs_passed >= skip
-                         and visual.build_block_visible
-                         and visual.build_center_error is not None
-                         and not (skip > 0 and visual.build_block_clipped))
-                if not found:
-                    self._build_find_frames = 0
-                    # We had a target and this frame lost it.  HOLD -- do NOT go
-                    # back to _build_slide_right, which strafes RIGHT while the car
-                    # was centring LEFT.  On 2026-09-30 (104151 run) that is exactly
-                    # what threw the target away: confirmed at lat=-65.78, centring
-                    # left from -67.52, one bad frame at t=1628.73, and the car then
-                    # slid 40 cm further right and held there for the rest of the
-                    # visit.  A single frame of a reading this unstable (the mask
-                    # alternates between a compact blob and a full-height band) must
-                    # not be able to reverse the search direction.
-                    if self._build_cap_acquired:
-                        self._build_target_lost_frames += 1
-                        if (self._build_target_lost_frames
-                                <= self.config.build_target_lost_frames):
-                            return RouteIntent("wait", self.state,
-                                               wait_s=self.config.poll_period_s)
-                        # Gone for good: drop the acquisition and search on, which is
-                        # bounded by the cap's own budget below.
-                        self._build_cap_acquired = False
-                        self._build_target_lost_frames = 0
-                        self._build_align_frames = 0
-                    if (self._build_blobs_passed >= skip
-                            and self._build_cap_seek_spent(absolute_lateral_cm)):
-                        self._build_cap_seek_exhausted = True
-                        return RouteIntent("stop", self.state)
-                    return self._build_slide_right(absolute_lateral_cm)
-                self._build_find_frames += 1
-                if self._build_find_frames < self.config.build_find_confirm_frames:
-                    return RouteIntent("wait", self.state,
-                                       wait_s=self.config.poll_period_s)
-                self._build_cap_acquired = True
-                self._build_target_lost_frames = 0
-                error = visual.build_center_error
-                if abs(error) > self.config.build_align_tolerance:
-                    self._build_align_frames = 0
-                    # Negative error = the blob sits LEFT of centre, and the car
-                    # then strafes LEFT (+vy) to bring it in -- the pickup's own
-                    # sign convention, which is field-proven.
-                    return RouteIntent(
-                        "strafe", self.state,
-                        speed=(abs(self.config.build_slide_speed) if error < 0
-                               else -abs(self.config.build_slide_speed)))
-                self._build_align_frames += 1
-                if self._build_align_frames >= self.config.build_align_confirm_frames:
-                    prepare_build_plan(self.loop_context)
-                    self._enter(RouteState.BUILD_ACTION, now)
-                else:
-                    # Centred, but not for long enough yet.  `wait` rather than
-                    # `stop`: on the chassis both are the same STOP, but the dry
-                    # run reads a stop in a state that is not a known hold as "the
-                    # route has come to rest" and gives up there.
-                    return RouteIntent("wait", self.state,
-                                       wait_s=self.config.poll_period_s)
-            elif self._build_blobs_passed < skip:
-                # PLACING, still getting past the buildings the memory counts.
-                #
-                # `or visual.build_block_visible` USED to be part of this condition --
-                # "a blob still in view means there are more buildings than the route
-                # knows about, so keep going".  That is right in principle and wrong
-                # with this detector: the build-area profile reports orange in
-                # essentially EVERY frame (1600 of 1658 on 2026-09-30's first run),
-                # so the condition was never false and the car slid to the 300 cm
-                # ceiling and held there instead of acting.  Operator, 2026-09-30,
-                # with two orange and no purple -- a BUILD_2 that should have run
-                # 「左边右边两个橙色打两层」: 「到了搭建区一直右移 没有执行动作」.
-                #
-                # The route's OWN count is authoritative here; vision only detects a
-                # blob LEAVING (that is what increments blobs_passed).  Acting early
-                # is guarded the other way instead: build_place_extra_right_cm below
-                # sets the gap, and build_slide_max_cm still bounds a car whose
-                # detector never counts a single blob.
-                #
-                # Still finding something to get past, so the clear pose is not set
-                # yet -- it must be the pose where the view FIRST went clear.
-                self._build_place_clear_at_cm = None
-                if (self._build_empty_frames >= self.config.build_slide_clear_frames
-                        and not self._build_blob_seen):
-                    self._build_blobs_passed = skip
-                    # This frame is the first confirmed clear pose.  Start the
-                    # configured extra gap here; the next tick can commit once
-                    # that distance has actually been travelled.
-                    self._build_place_clear_at_cm = absolute_lateral_cm
-                    return self._build_slide_right(absolute_lateral_cm)
-                return self._build_slide_right(absolute_lateral_cm)
-            elif absolute_lateral_cm is None:
-                # Same reason `_build_slide_right` refuses to move without an
-                # odometer: the extra gap is a distance, and a distance needs one.
+            if absolute_lateral_cm is None or self._build_visit_origin_cm is None:
+                # Same rule _build_slide_right enforces: this is a distance, and a
+                # distance needs an odometer.  Hold rather than move blind.
                 return RouteIntent("stop", self.state)
-            else:
-                # PLACING, and clear of every building.  Keep going right for
-                # build_place_extra_right_cm before acting.
+            distance_cm = abs(absolute_lateral_cm - self._build_visit_origin_cm)
+            if (self._build_slide_exhausted
+                    or distance_cm >= self.config.build_slide_max_cm):
+                # The runaway guard, and the one thing here that must never be
+                # relaxed: a car this far right of the pose it arrived at has an
+                # odometer that disagrees with the commands it was given, so it holds
+                # where it is and NEVER builds.  Every real target is
+                # build_right_step_cm * (skip + 1) -- 20 cm at the top -- so the only
+                # way to be out here is a reading that is not describing this car's
+                # motion.  Latching, rather than merely returning, is what keeps the
+                # hold held; _enter() clears it, so the next visit re-arms.
                 #
-                # Operator, 2026-09-29: 「要么要右移到没有方块的地方（长一点 目前两栋
-                # 建筑之间有点近 我需要你延长一点）」.  Stopping the instant the blob
-                # left the view put the new structure as close to the last one as the
-                # view allowed, which the operator measured as too close on the field.
-                # The gap is now set by a distance rather than by where the detector
-                # happened to lose the blob, so it does not move when the detector does.
-                #
-                # Bounded by the same slide ceiling as every other move here, so a
-                # detector that never lets the car past still latches its hold rather
-                # than sliding off.
-                if self._build_place_clear_at_cm is None:
-                    self._build_place_clear_at_cm = absolute_lateral_cm
-                travelled = abs(absolute_lateral_cm - self._build_place_clear_at_cm)
-                if travelled < self.config.build_place_extra_right_cm:
-                    return self._build_slide_right(absolute_lateral_cm)
-                intent = self._build_begin_action(now)
-                if intent is not None:
-                    return intent
+                # It also has to sit BEFORE the commit below, not only inside
+                # _build_slide_right: the car commits as soon as it is PAST its
+                # target, so a reading that jumped out here in one tick would
+                # otherwise land straight in _build_begin_action and build.
+                self._build_slide_exhausted = True
+                return RouteIntent("stop", self.state)
+            self._build_target_cm = self.config.build_right_step_cm * (skip + 1)
+            if distance_cm < self._build_target_cm:
+                return self._build_slide_right(absolute_lateral_cm)
+            intent = self._build_begin_action(now)
+            if intent is not None:
+                return intent
+            # Committed: BUILD_ACTION was entered and _build_begin_action returned
+            # None.  `wait` rather than falling through, so this tick cannot also be
+            # read as BUILD_ACTION's completion (the dry run reports
+            # build_action_done=True on every tick).
+            return RouteIntent("wait", self.state, wait_s=self.config.poll_period_s)
+
+            # ===== RETIRED 2026-10-01: BUILD_AREA's vision positioning =========
+            # Commented out, NOT deleted (operator: 「先全部注释掉」).  Everything
+            # below -- the build_block_visible gate, the blob-passed counting, the
+            # cap's search-and-centre -- is replaced by the odometry rule above.
+            #
+            # TO RESTORE: uncomment this block, delete the distance block above,
+            # and put `RouteState.BUILD_AREA: VisionTask.BUILD_OCCUPANCY` back into
+            # run_route_v2.vision_task_for_state().  All of the state this block
+            # touches (_build_blobs_passed, _build_first_visit_done, ...) is still
+            # declared and still reset in _enter(), and every config key it reads
+            # is still in RouteV2Config -- so the uncommented code runs as it did.
+            #
+            # WHY it was retired: run route_v2_full_20261001_085121, third visit to
+            # the build area.  `build_vision` telemetry held passed=0 for all 400
+            # rows with vis=True on nearly every frame, so the car slid the whole
+            # build_slide_max_cm (measured lat -301.25) and then held STOP with
+            # `state: BUILD_AREA` and not one line in the .out -- a silent hold,
+            # indistinguishable on the field from a car that is still waiting.
+#            if visual.build_block_visible is None:
+#                return RouteIntent("stop", self.state)
+#            if absolute_lateral_cm is not None and self._build_visit_origin_cm is None:
+#                # ABSOLUTE, not lateral_cm: the runner re-baselines the leg-relative
+#                # odometer on every state change, so only the absolute projection
+#                # survives from this arrival to BUILD_BACK_TO_LINE, which has to know
+#                # how far the visit moved the car sideways.
+#                self._build_visit_origin_cm = absolute_lateral_cm
+
+#            # The first actual building has no preceding stack to find.  Move 5 cm
+#            # right from the arrival pose, then run its inventory-selected action.
+#            # An empty pickup visit does not consume this first-building offset.
+#            if not self._build_first_visit_done:
+#                if not build_plan_for_inventory(self.loop_context):
+#                    return self._build_begin_action(now) or RouteIntent(
+#                        "wait", self.state, wait_s=self.config.poll_period_s)
+#                if absolute_lateral_cm is None or self._build_visit_origin_cm is None:
+#                    return RouteIntent("stop", self.state)
+#                # The hardware odometer's lateral sign is installation-specific;
+#                # the command below is the rightward command.  Use travelled
+#                # magnitude here so dry-run and the two encoder sign conventions
+#                # share the same 5 cm gate.
+#                rightward_cm = abs(absolute_lateral_cm - self._build_visit_origin_cm)
+#                if rightward_cm < self.config.build_first_right_cm:
+#                    return self._build_slide_right(absolute_lateral_cm)
+#                self._build_first_visit_done = True
+#                intent = self._build_begin_action(now)
+#                if intent is not None:
+#                    return intent
+#                return RouteIntent("wait", self.state,
+#                                   wait_s=self.config.poll_period_s)
+
+#            plan = build_plan_for_inventory(self.loop_context)
+#            is_cap = bool(plan) and plan[0] in CAP_ACTIONS
+#            skip = (self.loop_context.cap_count if is_cap
+#                    else self.loop_context.building_count)
+#            # A placement must pass every building already standing.  On some
+#            # arrivals the camera starts in the open space to their right, so
+#            # there is no blob transition to count.  Keep a short empty-view
+#            # debounce and then treat that known-empty arrival as already clear.
+#            # A clipped blob remains occupied here: it may be the close face of
+#            # a real building, and must leave the view before placement proceeds.
+#            occupancy_visible = bool(visual.build_block_visible)
+#            if (occupancy_visible and visual.build_roi_fill is not None
+#                    and visual.build_roi_fill < self.config.build_min_roi_fill):
+#                occupancy_visible = False
+
+#            # One "building passed" = a blob that WAS in view has left it, held
+#            # absent over build_slide_clear_frames so detector flicker cannot count
+#            # as a building.  The car passes exactly loop_context.building_count of
+#            # them: the buildings stand to the left of the free space and the car
+#            # arrives from the left.
+#            if is_cap and self._build_blobs_passed >= skip:
+#                # The next visible orange is the target, not another building to
+#                # skip.  In particular, never count its disappearance as permission
+#                # to cap a later building or the empty floor.
+#                pass
+#            elif occupancy_visible:
+#                self._build_blob_seen = True
+#                self._build_blob_absent_frames = 0
+#                self._build_empty_frames = 0
+#            elif self._build_blob_seen:
+#                self._build_empty_frames = 0
+#                self._build_blob_absent_frames += 1
+#                if self._build_blob_absent_frames >= self.config.build_slide_clear_frames:
+#                    self._build_blob_seen = False
+#                    self._build_blob_absent_frames = 0
+#                    self._build_blobs_passed += 1
+#            else:
+#                self._build_empty_frames += 1
+
+#            # The ceiling latches, and a latched ceiling HOLDS: reaching it means the
+#            # detector never let the car past the buildings the memory counts, which
+#            # is a fault to look at on the field, not a place to drop two blocks.
+#            if self._build_slide_exhausted or self._build_cap_seek_exhausted:
+#                return RouteIntent("stop", self.state)
+
+#            # With only orange (a placement) the car gets past EVERY building, so it
+#            # ends up in the empty space beyond them.  With a purple (a cap) it only
+#            # gets past the ones already capped, because the cap goes on the next
+#            # stack that is still waiting.  Operator, 2026-09-24: 「只有橙色 要跳过
+#            # 所有建筑」/「有紫色才要封顶 跳过已经封顶的」.
+#            if is_cap:
+#                if skip > 0 and self.loop_context.building_count > skip:
+#                    # A later purple must cap the next uncapped stack.  First pass
+#                    # each finished orange structure by seeing it leave the view.
+#                    # Then require the NEXT orange to occupy the build window.
+#                    # Its near face fills the frame, so contour centring would use
+#                    # the frame centre rather than the stack centre and miss it.
+#                    if self._build_blobs_passed < skip:
+#                        return self._build_slide_right(absolute_lateral_cm)
+#                    target_visible = bool(visual.build_block_visible)
+#                    if (target_visible and visual.build_roi_fill is not None
+#                            and visual.build_roi_fill < self.config.build_min_roi_fill):
+#                        target_visible = False
+#                    if target_visible:
+#                        self._build_next_cap_seen = True
+#                        self._build_next_cap_absent_frames = 0
+#                    elif self._build_next_cap_seen:
+#                        self._build_next_cap_absent_frames += 1
+#                        if self._build_next_cap_absent_frames >= self.config.build_slide_clear_frames:
+#                            self._build_cap_seek_exhausted = True
+#                            return RouteIntent("stop", self.state)
+#                        return RouteIntent("wait", self.state,
+#                                           wait_s=self.config.poll_period_s)
+#                    if target_visible and visual.build_block_clipped:
+#                        self._build_find_frames += 1
+#                        if self._build_find_frames >= self.config.build_next_cap_full_frames:
+#                            prepare_build_plan(self.loop_context)
+#                            self._enter(RouteState.BUILD_ACTION, now)
+#                            return RouteIntent("wait", self.state,
+#                                               wait_s=self.config.poll_period_s)
+#                        return RouteIntent("wait", self.state,
+#                                           wait_s=self.config.poll_period_s)
+#                    self._build_find_frames = 0
+#                    if self._build_cap_seek_spent(absolute_lateral_cm):
+#                        self._build_cap_seek_exhausted = True
+#                        return RouteIntent("stop", self.state)
+#                    return self._build_slide_right(absolute_lateral_cm)
+#                # CAPPING.  Get past the finished buildings, then centre on the
+#                # stack that is still waiting for its cap -- the cap goes on top of
+#                # what the car is looking at, so it has to line up with it first.
+#                #
+#                # `build_center_error is None` with a blob in view means the centre
+#                # is not known; sliding is the only way to change what the car is
+#                # looking at, and the ceiling bounds that.
+#                #
+#                # A CLIPPED blob is not a find either, and this is the one that
+#                # made a cap land on bare floor.  At the arrival pose the orange
+#                # fills the frame: the accepted box spans the whole ROI, so its
+#                # centroid lands on the frame centre and `build_center_error` reads
+#                # ~0 -- the alignment test says "already centred" no matter where
+#                # the car is.  Operator, 2026-09-30, on the view: 「第一次占满 右移
+#                # 橙色丢出视野 空 然后又有橙色从右边进入视野 移动 橙色占满」.  Only a
+#                # silhouette with space around it can be centred on.
+#                #
+#                # Gated on `skip > 0`, which is exactly "this cap goes on a stack
+#                # the car has to FIND".  At `skip == 0` the cap goes on whatever is
+#                # in front, so clipping is not consulted and the car caps where it
+#                # stands -- the first arrival's job.
+#                #
+#                # DEBOUNCED over `build_find_confirm_frames`.  A single frame that
+#                # reads as a find is not one: on 2026-09-30 the car had exactly one
+#                # 0.3 s window of a usable silhouette at lat=-65.16 (clipped=False,
+#                # centre_error=-0.12) and it flipped back to "clipped" before the
+#                # align could hold -- then slid another 237 cm.  That is the same
+#                # failure the pickup's own window verification guards against, with
+#                # the same fix: require the reading to persist before acting on it.
+#                # The car also holds still for those frames, which lets a mask that
+#                # shreds under motion (that run's rejected-blob count swung 0..250
+#                # per frame) settle before the reading is trusted.
+#                found = (self._build_blobs_passed >= skip
+#                         and occupancy_visible
+#                         and visual.build_center_error is not None
+#                         and not (skip > 0 and visual.build_block_clipped))
+#                if not found:
+#                    self._build_find_frames = 0
+#                    # We had a target and this frame lost it.  HOLD -- do NOT go
+#                    # back to _build_slide_right, which strafes RIGHT while the car
+#                    # was centring LEFT.  On 2026-09-30 (104151 run) that is exactly
+#                    # what threw the target away: confirmed at lat=-65.78, centring
+#                    # left from -67.52, one bad frame at t=1628.73, and the car then
+#                    # slid 40 cm further right and held there for the rest of the
+#                    # visit.  A single frame of a reading this unstable (the mask
+#                    # alternates between a compact blob and a full-height band) must
+#                    # not be able to reverse the search direction.
+#                    if self._build_cap_acquired:
+#                        self._build_target_lost_frames += 1
+#                        if (self._build_target_lost_frames
+#                                <= self.config.build_target_lost_frames):
+#                            return RouteIntent("wait", self.state,
+#                                               wait_s=self.config.poll_period_s)
+#                        # Gone for good: drop the acquisition and search on, which is
+#                        # bounded by the cap's own budget below.
+#                        self._build_cap_acquired = False
+#                        self._build_target_lost_frames = 0
+#                        self._build_align_frames = 0
+#                    if (self._build_blobs_passed >= skip
+#                            and self._build_cap_seek_spent(absolute_lateral_cm)):
+#                        self._build_cap_seek_exhausted = True
+#                        return RouteIntent("stop", self.state)
+#                    return self._build_slide_right(absolute_lateral_cm)
+#                self._build_find_frames += 1
+#                if self._build_find_frames < self.config.build_find_confirm_frames:
+#                    return RouteIntent("wait", self.state,
+#                                       wait_s=self.config.poll_period_s)
+#                self._build_cap_acquired = True
+#                self._build_target_lost_frames = 0
+#                error = visual.build_center_error
+#                if abs(error) > self.config.build_align_tolerance:
+#                    self._build_align_frames = 0
+#                    # Negative error = the blob sits LEFT of centre, and the car
+#                    # then strafes LEFT (+vy) to bring it in -- the pickup's own
+#                    # sign convention, which is field-proven.
+#                    return RouteIntent(
+#                        "strafe", self.state,
+#                        speed=(abs(self.config.build_slide_speed) if error < 0
+#                               else -abs(self.config.build_slide_speed)))
+#                self._build_align_frames += 1
+#                if self._build_align_frames >= self.config.build_align_confirm_frames:
+#                    prepare_build_plan(self.loop_context)
+#                    self._enter(RouteState.BUILD_ACTION, now)
+#                else:
+#                    # Centred, but not for long enough yet.  `wait` rather than
+#                    # `stop`: on the chassis both are the same STOP, but the dry
+#                    # run reads a stop in a state that is not a known hold as "the
+#                    # route has come to rest" and gives up there.
+#                    return RouteIntent("wait", self.state,
+#                                       wait_s=self.config.poll_period_s)
+#            elif self._build_blobs_passed < skip:
+#                # PLACING, still getting past the buildings the memory counts.
+#                #
+#                # `or visual.build_block_visible` USED to be part of this condition --
+#                # "a blob still in view means there are more buildings than the route
+#                # knows about, so keep going".  That is right in principle and wrong
+#                # with this detector: the build-area profile reports orange in
+#                # essentially EVERY frame (1600 of 1658 on 2026-09-30's first run),
+#                # so the condition was never false and the car slid to the 300 cm
+#                # ceiling and held there instead of acting.  Operator, 2026-09-30,
+#                # with two orange and no purple -- a BUILD_2 that should have run
+#                # 「左边右边两个橙色打两层」: 「到了搭建区一直右移 没有执行动作」.
+#                #
+#                # The route's OWN count is authoritative here; vision only detects a
+#                # blob LEAVING (that is what increments blobs_passed).  Acting early
+#                # is guarded the other way instead: build_place_extra_right_cm below
+#                # sets the gap, and build_slide_max_cm still bounds a car whose
+#                # detector never counts a single blob.
+#                #
+#                # Still finding something to get past, so the clear pose is not set
+#                # yet -- it must be the pose where the view FIRST went clear.
+#                self._build_place_clear_at_cm = None
+#                if (self._build_empty_frames >= self.config.build_slide_clear_frames
+#                        and not self._build_blob_seen):
+#                    self._build_blobs_passed = skip
+#                    # This frame is the first confirmed clear pose.  Start the
+#                    # configured extra gap here; the next tick can commit once
+#                    # that distance has actually been travelled.
+#                    self._build_place_clear_at_cm = absolute_lateral_cm
+#                    return self._build_slide_right(absolute_lateral_cm)
+#                return self._build_slide_right(absolute_lateral_cm)
+#            elif absolute_lateral_cm is None:
+#                # Same reason `_build_slide_right` refuses to move without an
+#                # odometer: the extra gap is a distance, and a distance needs one.
+#                return RouteIntent("stop", self.state)
+#            else:
+#                # PLACING, and clear of every building.  Keep going right for
+#                # build_place_extra_right_cm before acting.
+#                #
+#                # Operator, 2026-09-29: 「要么要右移到没有方块的地方（长一点 目前两栋
+#                # 建筑之间有点近 我需要你延长一点）」.  Stopping the instant the blob
+#                # left the view put the new structure as close to the last one as the
+#                # view allowed, which the operator measured as too close on the field.
+#                # The gap is now set by a distance rather than by where the detector
+#                # happened to lose the blob, so it does not move when the detector does.
+#                #
+#                # Bounded by the same slide ceiling as every other move here, so a
+#                # detector that never lets the car past still latches its hold rather
+#                # than sliding off.
+#                if self._build_place_clear_at_cm is None:
+#                    self._build_place_clear_at_cm = absolute_lateral_cm
+#                travelled = abs(absolute_lateral_cm - self._build_place_clear_at_cm)
+#                if travelled < self.config.build_place_extra_right_cm:
+#                    return self._build_slide_right(absolute_lateral_cm)
+#                intent = self._build_begin_action(now)
+#                if intent is not None:
+#                    return intent
+            # ===== end of the retired vision positioning =========================
 
         if self.state is RouteState.BUILD_ACTION:
             if visual.pickup_kind == "fault":

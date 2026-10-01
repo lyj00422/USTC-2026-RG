@@ -1,0 +1,7 @@
+{
+  "source_session": "动作包_20260917_215014",
+  "source_package": "0004_拿紫色v1_有抓取窗口",
+  "captured_at": "2026-09-17T14:20:54.033316+00:00",
+  "reference_only_package": "0003_拿紫色v1_无抓取窗口",
+  "notes": "0004 is the sole runtime source; 0003 is retained externally for comparison only."
+}
