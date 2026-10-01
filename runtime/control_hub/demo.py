@@ -31,7 +31,7 @@ class DemoChassisService:
         self._sync()
 
     def ports(self):
-        return [{"device": "demo-chassis", "description": "Simulated JDY-31", "is_chassis": True}]
+        return [{"device": "demo-chassis", "description": "Simulated chassis UART", "is_chassis": True}]
 
     def connect(self, device, baudrate=9600):
         self.connected = True
@@ -132,12 +132,8 @@ class DemoChassisService:
     def poll_once(self):
         return []
 
-    def keepalive_tick(self, now=None):
-        """The demo has no Bluetooth session to keep alive."""
-        return False
-
     def status(self):
-        return {"connected": self.connected, "device": self.device, "baudrate": self.baudrate, "state": self.state, "velocity": dict(self.velocity), "command": dict(self.command) if self.command else None, "last_reply": self.last_reply, "error": self.error, "distance": dict(self.distance), "pose": {**self.distance, "rotate_deg": self.rotate_deg}, "keepalive": {"enabled": False, "period_s": 0, "sends": 0, "last_send_s_ago": None, "next_in_s": None}}
+        return {"connected": self.connected, "device": self.device, "baudrate": self.baudrate, "state": self.state, "velocity": dict(self.velocity), "command": dict(self.command) if self.command else None, "last_reply": self.last_reply, "error": self.error, "distance": dict(self.distance), "pose": {**self.distance, "rotate_deg": self.rotate_deg}}
 
     def _sync(self):
         self.hub_state.update_module("chassis", state=self.state, detail=f"演示底盘 / {self.state}")

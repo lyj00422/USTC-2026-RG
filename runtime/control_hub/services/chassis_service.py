@@ -1,4 +1,11 @@
-"""Thread-safe browser-facing service for the Bluetooth chassis link."""
+"""Thread-safe browser-facing service for the chassis serial link.
+
+The link is the Pi's UART2 (GPIO0/GPIO1, physical pins 27/28) wired to the
+STM32's USART3 on PB10/PB11, reached through the udev alias
+``/dev/robogame-chassis``.  It used to be a JDY-31 Bluetooth SPP module; that
+is gone (2026-10-01) and with it the idle-session keepalive this service used
+to run -- a wire has no session to drop.
+"""
 
 from __future__ import annotations
 
@@ -22,10 +29,6 @@ class ChassisService:
         *,
         transport_factory=None,
         port_discovery=None,
-        keepalive_enabled: bool = True,
-        keepalive_s: float = 5.0,
-        keepalive_quiet_s: float = 2.0,
-        keepalive_log_every_s: float = 60.0,
         open_retry_s: float = 20.0,
         open_retry_interval_s: float = 2.5,
     ) -> None:
@@ -35,10 +38,6 @@ class ChassisService:
             lambda device, baudrate: SerialTransport(device, baudrate, timeout_s=0.0)
         )
         self.port_discovery = port_discovery or self._discover_ports
-        self.keepalive_enabled = bool(keepalive_enabled)
-        self.keepalive_s = max(1.0, float(keepalive_s))
-        self.keepalive_quiet_s = max(0.0, float(keepalive_quiet_s))
-        self.keepalive_log_every_s = max(0.0, float(keepalive_log_every_s))
         self.open_retry_s = max(0.0, float(open_retry_s))
         self.open_retry_interval_s = max(0.1, float(open_retry_interval_s))
         self._device: ChassisDevice | None = None
@@ -52,21 +51,18 @@ class ChassisService:
         self._error: str | None = None
         self._last_reply: dict | None = None
         self._lock = threading.RLock()
-        # Keeps the RFCOMM link maintainer from releasing the TTY underneath us
-        # and keeps route v2 from stealing our serial replies.
+        # Keeps route v2 from stealing this console's serial replies.  Until
+        # 2026-10-01 there was a third party to hold off -- the
+        # robogame-chassis-rfcomm maintainer service, which released and
+        # rebuilt the tty whenever the JDY-31 hung up.  The chassis is on a
+        # wire now and that service is gone, so route-vs-console is the only
+        # contention left.
         self._port_lock = ChassisPortLock()
         self._distance = {"forward_cm": 0, "right_cm": 0}
         self._rotate_deg = 0
         self._motion_history: list[dict] = []
         self._velocity_started_at: float | None = None
         self._clock = time.monotonic
-        # Idle keepalive state.  _last_tx_at covers every byte this service puts
-        # on the wire, so the keepalive can stay out of the operator's way.
-        self._last_tx_at: float | None = None
-        self._next_keepalive_at: float | None = None
-        self._last_keepalive_at: float | None = None
-        self._last_keepalive_log_at: float | None = None
-        self._keepalive_sends = 0
 
     @property
     def connected(self) -> bool:
@@ -98,38 +94,25 @@ class ChassisService:
             self._last_command_stop = False
             self._state = "CONNECTED"
             self._error = None
-            self._last_tx_at = self._clock()
-            self._next_keepalive_at = self._last_tx_at + self.keepalive_s
-            self._last_keepalive_at = None
-            self._last_keepalive_log_at = None
-            self._keepalive_sends = 0
             self.hub_state.update_module("chassis", state="CONNECTED", detail=f"{device} / {baudrate} 8N1")
             self.event_log.append("connected", "chassis", {"device": device, "baudrate": baudrate})
-            if self.keepalive_enabled:
-                self.event_log.append(
-                    "keepalive",
-                    "chassis",
-                    {"state": "enabled", "command": "SPD", "period_s": self.keepalive_s, "quiet_s": self.keepalive_quiet_s},
-                )
             return self.status()
 
     def _open_transport(self, device: str, baudrate: int):
-        """Open the TTY, retrying across the RFCOMM maintainer's rebuild windows.
+        """Open the TTY, retrying until the device node exists.
 
-        2026-09-30, after the Pi reboot: auto-connect failed with `[Errno 5]
-        Input/output error` while the link itself was healthy -- a standalone
-        lock+SPD probe answered on its first attempt a minute later.  The
-        maintainer (`robogame-chassis-rfcomm`) releases and rebuilds
-        /dev/rfcomm0 every ~14 s, because the JDY-31 hangs up an idle SPP
-        session after ~13-20 s, and an open that lands inside that window gets
-        EIO.  `ChassisLink`, which the route owns, reopens for exactly this
-        reason (see its module docstring); the console's one-shot open simply
-        gave up and left the operator with a hub that controls nothing.
+        The retry used to cover the RFCOMM maintainer's rebuild windows (the
+        JDY-31 dropped an idle SPP session every ~13-20 s and an open landing
+        inside the teardown got `[Errno 5]`).  A wired UART has no such window,
+        but the node is not instantaneously there either: on a cold boot the
+        udev rule that creates ``/dev/robogame-chassis`` trails the console, and
+        the operator should not have to press Connect twice.  `ChassisLink`
+        keeps the same behaviour for the route; see its module docstring.
 
-        The port lock is released between attempts on purpose.  Held through a
-        teardown it pins the dead link: the maintainer will not rebuild while an
-        application holds the port, so the retry would never meet a fresh SPP
-        session.  `_pi_chassis_ok.py` carries the same rule.
+        The port lock is released between attempts on purpose -- ChassisPortBusy
+        means another program owns the port and has to be stopped first, not
+        waited out, but a bare ``No such file or directory`` is worth retrying.
+        `_pi_chassis_ok.py` carries the same rule.
         """
         deadline = time.monotonic() + self.open_retry_s
         attempts = 0
@@ -170,14 +153,9 @@ class ChassisService:
             self._path = None
             self._baudrate = None
             self._velocity = {"vx": 0, "vy": 0, "wz": 0}
-            self._next_keepalive_at = None
             if self._state != "FAULT":
                 self._state = "DISCONNECTED"
                 self._error = None
-            if self._keepalive_sends:
-                self.event_log.append("keepalive", "chassis", {"state": "stopped", "sends": self._keepalive_sends})
-            self._keepalive_sends = 0
-            self._last_keepalive_at = None
             self.hub_state.update_module("chassis", state=self._state, detail=self._detail())
             self.event_log.append("disconnected", "chassis", {})
             return self.status()
@@ -196,7 +174,6 @@ class ChassisService:
             except Exception as exc:
                 self._handle_fault_locked(exc)
                 raise
-            self._last_tx_at = now
             previous = dict(self._velocity)
             if self._velocity_is_nonzero(previous) and previous != {"vx": vx, "vy": vy, "wz": wz}:
                 self._finish_velocity_segment_locked(now)
@@ -233,7 +210,6 @@ class ChassisService:
             except Exception as exc:
                 self._handle_fault_locked(exc)
                 raise
-            self._last_tx_at = self._clock()
             self._command = command
             self._distance["forward_cm"] += forward_cm
             self._distance["right_cm"] += right_cm
@@ -266,7 +242,6 @@ class ChassisService:
             except Exception as exc:
                 self._handle_fault_locked(exc)
                 raise
-            self._last_tx_at = self._clock()
             self._command = {"kind": "SEQ"}
             self._velocity = {"vx": 0, "vy": 0, "wz": 0}
             self._last_command_stop = False
@@ -350,18 +325,7 @@ class ChassisService:
                 "distance": dict(self._distance),
                 "pose": {**self._distance, "rotate_deg": self._rotate_deg},
                 "motion_history": self._motion_history_snapshot_locked(),
-                "keepalive": self._keepalive_status_locked(),
             }
-
-    def _keepalive_status_locked(self) -> dict:
-        now = self._clock()
-        return {
-            "enabled": self.keepalive_enabled,
-            "period_s": self.keepalive_s,
-            "sends": self._keepalive_sends,
-            "last_send_s_ago": None if self._last_keepalive_at is None else round(max(0.0, now - self._last_keepalive_at), 1),
-            "next_in_s": None if self._next_keepalive_at is None else round(max(0.0, self._next_keepalive_at - now), 1),
-        }
 
     def snapshot_state(self) -> dict:
         return self.status()
@@ -371,7 +335,6 @@ class ChassisService:
             return
         self._device.stop()
         self._last_command_stop = True
-        self._last_tx_at = self._clock()
         self.event_log.append("serial_tx", "chassis", {"raw": "STOP"})
         self.event_log.append("command", "chassis", {"command": "STOP"})
 
@@ -383,50 +346,8 @@ class ChassisService:
             except Exception as exc:
                 self._handle_fault_locked(exc)
                 raise
-            self._last_tx_at = self._clock()
             self.event_log.append("serial_tx", "chassis", {"raw": command})
             return self.status()
-
-    def keepalive_tick(self, now: float | None = None) -> bool:
-        """Send one read-only query when the link has been idle.
-
-        The JDY-31 drops an idle SPP session after ~13-20 s and the maintainer
-        service repairs it by recreating /dev/rfcomm0, which destroys the tty
-        the console is holding (permanent ``[Errno 5]`` on the next read).  One
-        ``SPD`` every ``keepalive_s`` keeps the session up; ``SPD`` is a query,
-        so it commands no motion and cannot disturb a held ``V``.
-
-        The tick is skipped whenever this service put anything on the wire
-        within ``keepalive_quiet_s``: the firmware answers only the first
-        command of a back-to-back pair, so a keepalive landing on top of an
-        operator command could swallow that command -- a dropped ``V`` looks
-        exactly like a dead robot.
-
-        Returns True when a keepalive byte was actually sent.
-        """
-        if not self.keepalive_enabled:
-            return False
-        with self._lock:
-            if self._device is None:
-                return False
-            now = self._clock() if now is None else now
-            if self._next_keepalive_at is None or now < self._next_keepalive_at:
-                return False
-            self._next_keepalive_at = now + self.keepalive_s
-            if self._last_tx_at is not None and now - self._last_tx_at < self.keepalive_quiet_s:
-                return False
-            try:
-                self._device.request_speed()
-            except Exception as exc:
-                self._handle_fault_locked(exc)
-                raise
-            self._last_tx_at = now
-            self._last_keepalive_at = now
-            self._keepalive_sends += 1
-            if self._last_keepalive_log_at is None or now - self._last_keepalive_log_at >= self.keepalive_log_every_s:
-                self._last_keepalive_log_at = now
-                self.event_log.append("keepalive", "chassis", {"command": "SPD", "sends": self._keepalive_sends})
-            return True
 
     def _motion_history_snapshot_locked(self) -> list[dict]:
         history = [dict(item, velocity=dict(item["velocity"]), command_integral=dict(item["command_integral"])) for item in self._motion_history]
@@ -476,7 +397,7 @@ class ChassisService:
                 self.event_log.append("fault", "chassis", {"message": f"close failed: {close_exc}"})
             self._device = None
             self._transport = None
-            # Release so the link maintainer is allowed to reconnect the TTY.
+            # Release so a reconnect can pick the port straight back up.
             self._port_lock.release()
         self.hub_state.update_module("chassis", state="FAULT", detail=self._detail())
 
@@ -487,13 +408,28 @@ class ChassisService:
 
     def _detail(self) -> str:
         if self._state == "DISCONNECTED":
-            return "蓝牙串口未连接"
+            return "底盘串口未连接"
         if self._error:
             return self._error
         return f"{self._path} / {self._state}" if self._path else self._state
 
     @staticmethod
     def _discover_ports() -> list[dict]:
+        """List the host's serial ports, flagging the chassis link.
+
+        Before 2026-10-01 the module identified itself: a JDY-31 Bluetooth SPP
+        link, whose product string pyserial reported and whose node was
+        /dev/rfcomm0.  A UART has no product string, no VID/PID and no
+        driver-specific name, so all that is left is the name we gave it
+        ourselves -- the udev alias, and the raw tty behind it.  ``ttyAMA2`` is
+        the one measured on the Pi at bring-up (see RASPBERRY_PI_UART.md); that
+        number moves if the overlay changes, and all a wrong guess costs is a
+        hint in a dropdown, so it is matched literally rather than derived.
+
+        The flag is only a hint in the operator's port list, and one fallback in
+        api.py for when the alias is missing.  The path the console actually
+        opens is always ``config.chassis_device``.
+        """
         try:
             from serial.tools import list_ports
         except ImportError:  # pragma: no cover - pyserial is an install dependency
@@ -501,11 +437,12 @@ class ChassisService:
         result = []
         for port in list_ports.comports():
             description = port.description or ""
+            name = f"{port.device} {description}".upper()
             result.append(
                 {
                     "device": port.device,
                     "description": description,
-                    "is_chassis": "JDY" in description.upper() or "BLUETOOTH" in description.upper() or "RFCOMM" in port.device.upper(),
+                    "is_chassis": "ROBOGAME-CHASSIS" in name or "TTYAMA2" in name,
                     "vid": port.vid,
                     "pid": port.pid,
                 }

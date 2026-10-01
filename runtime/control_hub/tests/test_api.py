@@ -66,12 +66,12 @@ class FakeChassis:
         self.motion_history = []
 
     def ports(self):
-        return [{"device": "/dev/rfcomm0", "description": "JDY-31", "is_chassis": True}]
+        return [{"device": "/dev/robogame-chassis", "description": "", "is_chassis": True}]
 
     def status(self):
         return {
             "connected": self.connected,
-            "device": "/dev/rfcomm0" if self.connected else None,
+            "device": "/dev/robogame-chassis" if self.connected else None,
             "baudrate": 9600 if self.connected else None,
             "state": "CONNECTED" if self.connected else "DISCONNECTED",
             "velocity": {"vx": 0, "vy": 0, "wz": 0},
@@ -287,8 +287,11 @@ def test_manual_connect_cannot_bypass_fixed_device_contract(tmp_path):
     arm.connected = False
     chassis.connected = False
 
+    # Both ask for a port that is plausibly the right device and is not the fixed
+    # one -- the raw UART2 tty behind the alias, in the chassis's case.  The
+    # contract is about the alias, not about which name looks right.
     arm_result = app.handle("POST", "/api/arm/connect", body=b'{"device":"/dev/ttyUSB1"}', headers=headers)
-    chassis_result = app.handle("POST", "/api/chassis/connect", body=b'{"device":"/dev/rfcomm0"}', headers=headers)
+    chassis_result = app.handle("POST", "/api/chassis/connect", body=b'{"device":"/dev/ttyAMA2"}', headers=headers)
 
     assert arm_result.status == 409
     assert chassis_result.status == 409

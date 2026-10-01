@@ -1,17 +1,16 @@
-"""Exclusive access to the Bluetooth chassis serial port.
+"""Exclusive access to the chassis serial port.
 
-The RFCOMM TTY is created and held open by the ``robogame-chassis-rfcomm``
-systemd service.  The runtime control hub and ``run_route_v2.py`` both open that
-same TTY, and two readers steal each other's replies.  Worse, the maintainer
-service used to run ``rfcomm release`` underneath a live consumer, which gave
-the consumer ``[Errno 5] Input/output error`` and left the kernel RFCOMM session
-busy, after which every reconnect failed with ``Device or resource busy``.
+The runtime control hub and ``run_route_v2.py`` both open
+``/dev/robogame-chassis``, and two readers on one tty steal each other's
+replies.  One advisory lock file is what keeps them apart: a consumer holds
+``LOCK_EX`` for as long as it has the port open, and a second one fails fast
+with ``ChassisPortBusy`` instead of silently corrupting the first one's stream.
 
-All three sides coordinate through one advisory lock file:
-
-* a consumer holds ``LOCK_EX`` for as long as it has the port open;
-* the maintainer only releases and reconnects when it can take ``LOCK_EX``
-  itself, i.e. when no application is using the port.
+Until 2026-10-01 there was a third party in this protocol: the
+``robogame-chassis-rfcomm`` maintainer service, which rebuilt ``/dev/rfcomm0``
+whenever the JDY-31 hung up and had to be kept away from a live consumer.  The
+chassis is on a wired UART now and that service is gone, so the lock has one job
+left -- route vs. console.
 
 On hosts without ``fcntl`` (the Windows development machines) the lock degrades
 to a no-op: the chassis link only exists on the Raspberry Pi.

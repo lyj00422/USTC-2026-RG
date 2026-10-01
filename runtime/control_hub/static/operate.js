@@ -227,8 +227,6 @@ const OperatorPage = (() => {
     $("#operate-arm-state").textContent = armMode; $("#operate-arm-signal").textContent = `ARM ${armMode}`; $("#operate-arm-signal").dataset.state = armMode;
     $("#operate-arm-routine").textContent = armStatus.routine ?? "--"; $("#operate-arm-step").textContent = armStatus.step ?? "--";
     $("#operate-chassis-state").textContent = chassisState; $("#operate-chassis-signal").textContent = `CHASSIS ${chassisState}`; $("#operate-chassis-signal").dataset.state = chassisState; $("#operate-chassis-device").textContent = chassisStatus.device || "固定底盘未连接";
-    const keepalive = chassisStatus.keepalive || {};
-    $("#operate-keepalive").textContent = keepalive.enabled ? `${keepalive.period_s}s · 已发 ${keepalive.sends} 次` : "关闭";
     $("#operate-camera-state").textContent = camera.running ? "CAMERA READY" : "CAMERA OFFLINE"; $("#operate-camera-signal").textContent = camera.running ? "CAMERA READY" : "CAMERA OFFLINE";
     cameraAvailable = Boolean(camera.frame_available);
     // Recording moves the picture back to the camera panel and holds it there.

@@ -1,0 +1,74 @@
+{
+  "name": "吸橙色吸住-正确版",
+  "named": true,
+  "protocol": "RG-ARM-1",
+  "started_at": "2026-09-26T15:11:51.146548+00:00",
+  "steps": [
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1650,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1600,
+      "time_ms": 500
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": -16,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
+      "kind": "SERVO",
+      "id": 1,
+      "position": 750,
+      "time_ms": 500
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 5,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
+      "kind": "SUCTION",
+      "enabled": true
+    },
+    {
+      "kind": "SERVO",
+      "id": 1,
+      "position": 1520,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1400,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1500,
+      "time_ms": 500
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 16,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    }
+  ],
+  "zones": {},
+  "finished_at": "2026-09-26T15:12:50.736764+00:00"
+}

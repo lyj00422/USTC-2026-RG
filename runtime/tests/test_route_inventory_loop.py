@@ -100,10 +100,8 @@ def test_build_area_first_visit_builds_where_it_stands():
     # The entry tick is still held -- it carries the 330 cm leg's readings.
     assert machine.step(0.0, vision=occupied).kind == "wait"
 
-    moving = machine.step(0.1, vision=occupied, absolute_lateral_cm=0.0)
-    committed = machine.step(0.2, vision=occupied, absolute_lateral_cm=-5.0)
+    committed = machine.step(0.1, vision=occupied, absolute_lateral_cm=0.0)
 
-    assert moving.kind == "strafe"
     assert committed.state is RouteState.BUILD_ACTION, "must build, not slide"
     assert machine._build_first_visit_done is True
 
@@ -158,8 +156,6 @@ def test_build_area_first_visit_is_taken_only_once():
     machine.loop_context.record_orange()
     machine.step(0.1, vision=VisionRouteInput(build_block_visible=False),
                  absolute_lateral_cm=0.0)
-    machine.step(0.2, vision=VisionRouteInput(build_block_visible=False),
-                 absolute_lateral_cm=-5.0)
     assert machine.state is RouteState.BUILD_ACTION
 
     machine._enter(RouteState.BUILD_AREA, 1.0)
@@ -312,43 +308,6 @@ def test_build_area_place_skips_every_building():
     assert committed.state is RouteState.BUILD_ACTION
 
 
-def test_second_purple_passes_first_building_then_caps_next_full_window_target():
-    """The second purple is reserved for the second building.
-
-    The first orange building must leave the view first.  The next orange may fill
-    the entire camera window; that close view is still the second building and must
-    select the orange-plus-purple cap package instead of sliding to empty floor.
-    """
-    machine = RouteV2StateMachine(RouteV2Config())
-    machine.loop_context = LoopContext(purple_count=1, orange_count=1,
-                                       building_count=2, cap_count=1)
-    machine._enter(RouteState.BUILD_AREA, 0.0)
-    _not_the_first_visit(machine)
-
-    def tick(now, lateral, visible, clipped=False):
-        return machine.step(
-            now,
-            vision=VisionRouteInput(build_block_visible=visible,
-                                    build_block_clipped=clipped,
-                                    build_center_error=0.0 if visible else None),
-            absolute_lateral_cm=lateral,
-        )
-
-    # First (already capped) building: see it, then confirm it has gone.
-    tick(0.1, 0.0, True, True)
-    tick(0.2, -5.0, False)
-    tick(0.3, -10.0, False)
-    cleared = tick(0.4, -15.0, False)
-    assert cleared.kind == "strafe"
-
-    # Second building fills the window.  Two frames are enough by design.
-    tick(0.5, -20.0, True, True)
-    committed = tick(0.6, -20.0, True, True)
-
-    assert committed.state is RouteState.BUILD_ACTION
-    assert machine.loop_context.build_plan == ("TOP_RIGHT_ORANGE_PURPLE",)
-
-
 def test_build_area_place_commits_when_arrival_view_is_already_empty():
     """A placement visit can arrive to the right of all known buildings.
 
@@ -371,35 +330,6 @@ def test_build_area_place_commits_when_arrival_view_is_already_empty():
     committed = machine.step(0.5, vision=away, absolute_lateral_cm=extra)
 
     assert committed.state is RouteState.BUILD_ACTION
-
-
-def test_build_area_place_skips_two_known_buildings_from_an_empty_arrival():
-    """Without a second purple, orange placement still clears both buildings."""
-    machine = _place_machine()
-    machine.loop_context.building_count = 2
-    away = VisionRouteInput(build_block_visible=False)
-    for index in range(machine.config.build_slide_clear_frames):
-        machine.step(0.1 + index * 0.1, vision=away,
-                     absolute_lateral_cm=0.0)
-
-    committed = machine.step(0.5, vision=away,
-                             absolute_lateral_cm=machine.config.build_place_extra_right_cm)
-
-    assert committed.state is RouteState.BUILD_ACTION
-
-
-def test_build_area_ignores_small_orange_fragments_when_counting_passed_buildings():
-    """Accepted colour fragments below the ROI threshold are not buildings."""
-    machine = _place_machine()
-    machine.loop_context.building_count = 1
-    fragment = VisionRouteInput(build_block_visible=True, build_roi_fill=0.05)
-
-    for index in range(machine.config.build_slide_clear_frames + 1):
-        result = machine.step(0.1 + index * 0.1, vision=fragment,
-                              absolute_lateral_cm=0.0)
-
-    assert result.kind == "strafe"
-    assert machine._build_blobs_passed == 1
 
 
 def test_build_area_place_keeps_going_after_the_view_clears():

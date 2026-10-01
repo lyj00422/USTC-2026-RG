@@ -1,8 +1,29 @@
 # /etc/udev/rules.d/99-robogame-chassis.rules
 #
-# Stable alias for the JDY-31 Bluetooth SPP tty.
+# Stable alias for the chassis serial link.
 #
-# udev OWNS this symlink.  The RFCOMM link maintainer service must never create
-# or delete it: its old `rm -f /dev/robogame-chassis` raced with udev, removed
-# the alias under running programs, and was one half of the 2026-09-14 outage.
-KERNEL=="rfcomm0", SUBSYSTEM=="tty", SYMLINK+="robogame-chassis", GROUP="dialout", MODE="0660"
+# 2026-10-01: the chassis link stopped being the JDY-31 Bluetooth SPP tty
+# (/dev/rfcomm0) and became the Pi's UART2, wired straight to the STM32's
+# USART3 on PB10/PB11.  UART2 is enabled by `dtoverlay=uart2` in
+# /boot/firmware/config.txt, which puts it on GPIO0/GPIO1 (physical pins 27/28)
+# -- the HAT ID pins, free on this robot because nothing wears a HAT.
+#
+# ttyAMA2 is the name the kernel gave it.  That number is a property of the
+# overlay, not of the wiring, so it is recorded HERE and only here: the runtime,
+# the control hub and every script under pi-tools/ address the alias, and the
+# number may be re-measured against the device tree at any time
+# (`ls -l /sys/class/tty/ttyAMA*/device/of_node` -> .../serial@7e201400, which
+# is the `serial2` alias, i.e. UART2).  The bring-up predicted ttyAMA1 and was
+# wrong; the 2026-10-01 field measurement says ttyAMA2.
+#
+# This file is the source of truth for the INSTALLED rule, and the two had
+# drifted: the Pi's /etc copy was hand-edited on 2026-10-01 while this one still
+# matched rfcomm0, so re-running the pi-setup install step would have replaced a
+# working alias with a rule that never fires -- no /dev/robogame-chassis, and
+# the launch gate dies on "did not appear within 40s".  Keep them in step.
+#
+# udev OWNS this symlink.  The RFCOMM link maintainer service is gone, but the
+# rule stands: that service's old `rm -f /dev/robogame-chassis` raced with udev,
+# removed the alias under running programs, and was one half of the 2026-09-14
+# outage.  Nothing else may create or delete this name.
+KERNEL=="ttyAMA2", SUBSYSTEM=="tty", SYMLINK+="robogame-chassis", GROUP="dialout", MODE="0660"

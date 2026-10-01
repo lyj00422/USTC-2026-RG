@@ -10,6 +10,12 @@ ROOT = "/home/pi/robogame-runtime"
 cfg = load_route_v2_config(f"{ROOT}/config/route_v2.yaml")
 
 print("pickup_3_arrived_distance_cm =", cfg.pickup_3_arrived_distance_cm)
+# The LIVE build-area knob since 2026-10-01: the N-th structure/stack goes this
+# far right of the arrival pose, times N.  The three below it belong to the
+# retired vision positioning -- they still exist, but nothing reads them.
+print("build_right_step_cm          =", cfg.build_right_step_cm)
+print("build_slide_max_cm           =", cfg.build_slide_max_cm)
+print("-- retired vision positioning --")
 print("build_cap_seek_max_cm        =", cfg.build_cap_seek_max_cm)
 print("build_find_confirm_frames    =", cfg.build_find_confirm_frames)
 print("build_target_lost_frames     =", cfg.build_target_lost_frames)

@@ -1,0 +1,15 @@
+{
+  "root": "C:/Users/LJY/Desktop/RG/runtime",
+  "remote": "/home/pi/robogame-runtime",
+  "backup": "/home/pi/robogame-runtime/backups/push-20260930-33119e2-over-stallfix.tar.gz",
+  "files": [
+    ["route_v2/state_machine.py", "route_v2/state_machine.py"],
+    ["route_v2/config.py", "route_v2/config.py"],
+    ["run_route_v2.py", "run_route_v2.py"],
+    ["config/route_v2.yaml", "config/route_v2.yaml"],
+    ["tests/test_run_route_v2.py", "tests/test_run_route_v2.py"],
+    ["tests/test_route_v2_config.py", "tests/test_route_v2_config.py"],
+    ["tests/test_pickup_vision.py", "tests/test_pickup_vision.py"],
+    ["tests/test_route_inventory_loop.py", "tests/test_route_inventory_loop.py"]
+  ]
+}

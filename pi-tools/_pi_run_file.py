@@ -4,11 +4,20 @@ The Pi's SFTP server rejects writes (ENOENT on open-for-write) even though the
 filesystem is writable, so the file is shipped as base64 over the exec channel.
 
 Usage:
-    python _pi_run_file.py <local_path> [remote_workdir] [timeout_s]
+    python _pi_run_file.py <local_path> [remote_workdir] [timeout_s] [-- args...]
+
+Anything after `--` is appended to the remote command line, so a script that
+takes parameters can be driven without editing it for every run:
+
+    python _pi_run_file.py _pi_retarget_servo.py /home/pi/robogame-runtime 120 -- 1 1000
+
+Shell quoting round the trip is the fragile part here, so the extra arguments
+are quoted with shlex on the way in.
 """
 
 import base64
 import os
+import shlex
 import sys
 
 import paramiko
@@ -18,15 +27,24 @@ USER = os.environ.get("RG_PI_USER", "pi")
 
 
 def main():
-    local = sys.argv[1]
-    workdir = sys.argv[2] if len(sys.argv) > 2 else "/home/pi/robogame-runtime"
-    timeout = float(sys.argv[3]) if len(sys.argv) > 3 else 120.0
+    rest = sys.argv[1:]
+    extra = []
+    if "--" in rest:
+        split = rest.index("--")
+        rest, extra = rest[:split], rest[split + 1:]
+    if not rest:
+        print(__doc__)
+        return 2
+    local = rest[0]
+    workdir = rest[1] if len(rest) > 1 else "/home/pi/robogame-runtime"
+    timeout = float(rest[2]) if len(rest) > 2 else 120.0
     name = os.path.basename(local)
     remote = f"/tmp/{name}"
     payload = base64.b64encode(open(local, "rb").read()).decode("ascii")
+    tail = (" " + " ".join(shlex.quote(a) for a in extra)) if extra else ""
     command = (
         f"printf '%s' '{payload}' | base64 -d > {remote} && "
-        f"cd {workdir} && .venv/bin/python {remote}"
+        f"cd {workdir} && .venv/bin/python {remote}{tail}"
     )
 
     client = paramiko.SSHClient()

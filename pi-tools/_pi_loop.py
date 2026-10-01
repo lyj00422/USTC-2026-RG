@@ -2,10 +2,16 @@
 
 Run ON the Pi via _pi_run_file.py.  Reads the newest run.
 
-BUILD_AREA's job is to slide right to the right place and then act.  Where it
-ends up is decided by two counters in `LoopContext` that nothing recorded before
-2026-09-30 -- so "it built on the empty floor instead of onto the second
-building" had no evidence behind it at all.
+BUILD_AREA's job is to go right to the right place and then act.  SINCE
+2026-10-01 that place is pure odometry: the N-th structure (or the N-th stack,
+for a cap) is `step_cm * N` right of the pose the visit arrived at, where N comes
+from the two `LoopContext` counters.  So `target` on the line below is what this
+visit is aiming for, and `exhausted` says the odometer disagreed with the
+commands and the car held instead of building.
+
+(`passed` is a leftover of the vision positioning that decided this until
+2026-10-01: it counted blobs leaving the view, and the key is still emitted as a
+constant because the attribute still exists.  It means nothing now.)
 
 Prints one line per CHANGE of the interesting values, per visit, so the whole
 decision reads as a short timeline rather than 20 rows a second.
@@ -15,8 +21,9 @@ import json
 import os
 
 TAG = "logs/route_v2_*.jsonl"
-KEYS = ("cap_count", "building_count", "blobs_passed", "slide_exhausted",
-        "plan", "purple", "orange", "left_slot", "right_slot", "suction_slot")
+KEYS = ("cap_count", "building_count", "target_cm", "step_cm", "blobs_passed",
+        "slide_exhausted", "plan", "purple", "orange", "left_slot", "right_slot",
+        "suction_slot")
 
 
 def main() -> None:
@@ -60,6 +67,8 @@ def main() -> None:
         for when, loop in visit["rows"]:
             print(f"   t={when:8.1f}  cap={loop.get('cap_count')} "
                   f"bldg={loop.get('building_count')} "
+                  f"target={loop.get('target_cm')} "
+                  f"step={loop.get('step_cm')} "
                   f"passed={loop.get('blobs_passed')} "
                   f"exhausted={loop.get('slide_exhausted')} "
                   f"plan={loop.get('plan')}")

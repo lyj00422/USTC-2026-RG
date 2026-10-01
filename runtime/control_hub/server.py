@@ -200,14 +200,7 @@ def build_components(config_path: str | Path, *, demo: bool):
             probe_timeout_s=config.arm_probe_timeout_ms / 1000,
             action_timeout_s=config.arm_action_timeout_ms / 1000,
         )
-        chassis = ChassisService(
-            state,
-            event_log,
-            keepalive_enabled=config.chassis_keepalive_enabled,
-            keepalive_s=config.chassis_keepalive_s,
-            keepalive_quiet_s=config.chassis_keepalive_quiet_s,
-            keepalive_log_every_s=config.chassis_keepalive_log_every_s,
-        )
+        chassis = ChassisService(state, event_log)
         camera_config = load_camera_config(_resolve_runtime_path(config.camera_config_path, config_path))
         settings = CameraSettings(camera_config.camera, camera_config.width, camera_config.height, camera_config.fps, camera_config.pixel_format)
         camera = CameraService(settings, output_dir, state, event_log)
@@ -254,12 +247,13 @@ def main(argv=None) -> int:
         while not watchdog_stop.wait(.2):
             safety.check_lease(now_ms=time.monotonic_ns() // 1_000_000)
             try:
+                # Read-only drain of whatever the chassis has sent.  A read-only
+                # SPD keepalive used to run here too: the JDY-31 dropped an idle
+                # SPP session after ~13-20 s and the maintainer service repaired
+                # it by recreating /dev/rfcomm0, which broke the tty this
+                # process was holding.  A wire does not go idle, so there is
+                # nothing to keep alive.
                 chassis.poll_once()
-                # Idle keepalive: one read-only SPD every keepalive_s, skipped
-                # whenever the operator just sent something.  A dropped JDY-31
-                # session makes the maintainer service recreate /dev/rfcomm0,
-                # which permanently breaks the tty this process is holding.
-                chassis.keepalive_tick()
             except Exception:
                 pass
             line.poll_once()

@@ -22,3 +22,8 @@ pi-tools/_pulled/orange/
 handoff/pi-setup/sd-boot-20260912/
 handoff/measurements/
 !handoff/measurements/README.md
+
+# Scratch area for pulled Pi trees and package staging (pi-tools/_pulled/*)
+pi-tools/_pulled/
+pi-tools/_cmp*/
+pi-tools/_cmp*.txt

@@ -1,22 +1,15 @@
 chassis:
+  # udev alias for the Pi's UART2 (GPIO0/GPIO1, physical pins 27/28) wired to the
+  # STM32's USART3 on PB10/PB11.  The name is kept from the Bluetooth era on
+  # purpose: the runtime, the control hub and ~20 scripts under pi-tools/ address
+  # the chassis by it, so the wire swap touched only the udev rule.
+  #
+  # 2026-10-01: the JDY-31 Bluetooth module was replaced by this wire.  The link
+  # no longer has an idle session to keep alive, so there is no keepalive block
+  # here any more -- see rg_runtime/chassis_link.py for what that used to be for.
   device: /dev/robogame-chassis
   baudrate: 9600
-  bluetooth_mac: 6E:53:BD:74:00:A7
-  spp_channel: 1
   heartbeat_ms: 50
-  # The JDY-31 tears down an idle SPP session after ~13-20 s, and the maintainer
-  # service repairs it by recreating /dev/rfcomm0 -- which kills the tty that
-  # whoever is connected is holding.  While the console holds the port it sends
-  # one read-only SPD every keepalive_s seconds so the session never goes idle.
-  # SPD commands no motion; keepalive_quiet_s suppresses the tick whenever
-  # another command went out recently, because the firmware only answers the
-  # first command of a back-to-back pair.
-  keepalive_enabled: true
-  keepalive_s: 5
-  keepalive_quiet_s: 2
-  # One keepalive event in the log per minute; the raw send would be 12/min.
-  keepalive_log_every_s: 60
-  # Pair the system Bluetooth device JDY-31 with PIN 1234 before starting the hub.
 line_sensor:
   enabled: true
   # Measured wiring 2026-09-14: module TX -> physical pin 18/GPIO24, module RX -> pin 16/GPIO23.

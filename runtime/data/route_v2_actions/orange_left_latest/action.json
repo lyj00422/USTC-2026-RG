@@ -1,0 +1,102 @@
+{
+  "name": "吸橙色放左边",
+  "named": true,
+  "protocol": "RG-ARM-1",
+  "started_at": "2026-09-26T14:56:12.179662+00:00",
+  "steps": [
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1650,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1600,
+      "time_ms": 500
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": -17,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
+      "kind": "SERVO",
+      "id": 1,
+      "position": 800,
+      "time_ms": 500
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 5,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
+      "kind": "SUCTION",
+      "enabled": true
+    },
+    {
+      "kind": "SERVO",
+      "id": 1,
+      "position": 1520,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 0,
+      "position": 630,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 900,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1850,
+      "time_ms": 500
+    },
+    {
+      "kind": "SUCTION",
+      "enabled": false
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1400,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1500,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 0,
+      "position": 1840,
+      "time_ms": 500
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 17,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    }
+  ],
+  "zones": {},
+  "finished_at": "2026-09-26T14:58:24.003869+00:00"
+}

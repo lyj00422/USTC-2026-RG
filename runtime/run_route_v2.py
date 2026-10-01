@@ -548,7 +548,6 @@ class RouteVisionRuntime:
                 build_block_visible=bool(value.accepted),
                 build_center_error=center_error,
                 build_block_clipped=block_clipped,
-                build_roi_fill=roi_fill,
                 camera_fault=camera_fault,
             )
 
@@ -2222,8 +2221,7 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
     # Load the exported action catalog before route movement.  Pickup windows
     # are embedded in the pickup packages; build packages intentionally have
     # no window and are gated by the build vision result in the state machine.
-    # The link owns the port lock, the transport, the reconnect and -- critically
-    # -- the heartbeat, which starts HERE rather than at the first tick.
+    # The link owns the port lock, the transport and the reconnect.
     #
     # The 20-40 s of line-sensor/camera/arm/action-catalogue initialisation that
     # follows this call used to sit on an open port with nothing on the wire, and
@@ -2237,14 +2235,10 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
         runtime.chassis_device,
         runtime.chassis_baudrate,
         wait_for_device=_wait_for_chassis_device,
-        heartbeat_enabled=config.chassis_heartbeat_enabled,
-        heartbeat_s=config.chassis_heartbeat_s,
-        heartbeat_quiet_s=config.chassis_heartbeat_quiet_s,
         recover_timeout_s=config.chassis_reconnect_timeout_s,
         recover_retry_s=config.chassis_reconnect_retry_s,
     )
-    # Opens the port (after waiting for the node), primes RFCOMM with a STOP, and
-    # starts the heartbeat thread.
+    # Opens the port (after waiting for the node) and primes the chassis with a STOP.
     chassis_link.open()
     chassis = chassis_link
 

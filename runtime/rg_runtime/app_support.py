@@ -11,10 +11,14 @@ import yaml
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    # `/dev/robogame-chassis` is a udev alias (99-robogame-chassis.rules) for the
+    # Pi's UART2 tty -- GPIO0/GPIO1, physical pins 27/28, wired straight to the
+    # STM32's USART3 on PB10/PB11.  It replaced the JDY-31 Bluetooth module on
+    # 2026-10-01; the alias name was kept deliberately, because the runtime, the
+    # control hub and about twenty scripts under pi-tools/ all address the
+    # chassis by it.
     chassis_device: str
     chassis_baudrate: int
-    chassis_bluetooth_mac: str
-    chassis_spp_channel: int
     arm_device: str
     arm_baudrate: int
     heartbeat_ms: int
@@ -50,10 +54,6 @@ class RuntimeConfig:
     line_request_command: str = "$0,0,1#"
     line_startup_delay_s: float = 20.0
     line_request_retry_s: float = 1.0
-    chassis_keepalive_enabled: bool = True
-    chassis_keepalive_s: float = 5.0
-    chassis_keepalive_quiet_s: float = 2.0
-    chassis_keepalive_log_every_s: float = 60.0
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
@@ -67,8 +67,6 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
     return RuntimeConfig(
         chassis_device=str(chassis.get("device", "/dev/robogame-chassis")),
         chassis_baudrate=int(chassis.get("baudrate", 9600)),
-        chassis_bluetooth_mac=str(chassis.get("bluetooth_mac", "6E:53:BD:74:00:A7")),
-        chassis_spp_channel=int(chassis.get("spp_channel", 1)),
         arm_device=str(arm.get("device", "/dev/robogame-arm")),
         arm_baudrate=int(arm.get("baudrate", 115200)),
         heartbeat_ms=int(chassis.get("heartbeat_ms", 50)),
@@ -95,10 +93,6 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         line_request_command=str(line.get("request_command", "$0,0,1#")),
         line_startup_delay_s=float(line.get("startup_delay_s", 20.0)),
         line_request_retry_s=float(line.get("request_retry_s", 1.0)),
-        chassis_keepalive_enabled=bool(chassis.get("keepalive_enabled", True)),
-        chassis_keepalive_s=float(chassis.get("keepalive_s", 5.0)),
-        chassis_keepalive_quiet_s=float(chassis.get("keepalive_quiet_s", 2.0)),
-        chassis_keepalive_log_every_s=float(chassis.get("keepalive_log_every_s", 60.0)),
     )
 
 

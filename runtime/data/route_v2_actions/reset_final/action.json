@@ -1,0 +1,40 @@
+{
+  "name": "复位_final",
+  "named": true,
+  "protocol": "RG-ARM-1",
+  "started_at": "2026-09-29T05:34:37.993144+00:00",
+  "steps": [
+    {
+      "kind": "SERVO",
+      "id": 4,
+      "position": 1500,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 3,
+      "position": 1400,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 2,
+      "position": 1500,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 1,
+      "position": 1520,
+      "time_ms": 500
+    },
+    {
+      "kind": "SERVO",
+      "id": 0,
+      "position": 1840,
+      "time_ms": 500
+    }
+  ],
+  "zones": {},
+  "finished_at": "2026-09-29T05:34:48.246529+00:00"
+}

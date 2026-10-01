@@ -1,13 +1,15 @@
-"""ChassisLink: the heartbeat that keeps the Bluetooth session from idling out.
+"""ChassisLink: open, recover, and the STOP-readback confirmation.
 
 Everything here is synchronous and driven by an injected clock, which is how the
-project already tests this kind of logic (see the keepalive block in
-``control_hub/tests/test_chassis_service.py``).  One test at the end deliberately
-starts the real thread, to prove the thin driver actually drives ``heartbeat_tick``.
+project already tests this kind of logic.
+
+There was a second subject until 2026-10-01 -- a link-level keepalive whose only
+job was to stop the JDY-31 dropping an idle Bluetooth session.  The chassis is
+on a wire now (see ``rg_runtime/chassis_link.py``), so those tests are gone with
+the mechanism and the tests that remain are the parts of the class that still
+have work to do.
 """
 from __future__ import annotations
-
-import time
 
 import pytest
 
@@ -47,15 +49,6 @@ class FakePortLock:
         self.held = False
 
 
-class BrokenQueryTransport(MemoryTransport):
-    """Raises on SPD -- the same shape the chassis service tests use."""
-
-    def send_line(self, line):
-        if line.startswith("SPD"):
-            raise OSError("bluetooth link lost")
-        super().send_line(line)
-
-
 def make_link(transports=None, *, clock=None, log=None, **kwargs):
     """A link wired to fake lock, fake clock and a queue of transports.
 
@@ -89,7 +82,7 @@ def make_link(transports=None, *, clock=None, log=None, **kwargs):
 # --------------------------------------------------------------------- open
 
 
-def test_open_primes_with_stop_and_starts_the_heartbeat():
+def test_open_primes_with_stop():
     link, handed, _clock, lock = make_link()
     link.open()
     try:
@@ -118,50 +111,14 @@ def test_open_releases_the_lock_when_the_transport_cannot_be_opened():
     )
     with pytest.raises(OSError):
         link.open()
-    # A lock left held here would stop the maintainer from rebuilding the node --
-    # the deadlock that stranded the robot on 2026-09-14.
+    # A lock left held here would keep the next open -- the route's own reconnect
+    # or the operator console -- from taking the port, which is the deadlock that
+    # stranded the robot on 2026-09-14.
     assert not lock.held
     assert lock.releases == 1
 
 
-# ---------------------------------------------------------------- heartbeat
-
-
-def test_heartbeat_fires_after_a_period_of_silence():
-    link, handed, _clock, _lock = make_link()
-    link.open()
-    try:
-        transport = handed[0]
-        assert transport.sent == ["STOP\r\n"]
-        assert link.heartbeat_tick(1004.9) is False
-        assert link.heartbeat_tick(1005.0) is True
-        assert transport.sent == ["STOP\r\n", "SPD\r\n"]
-        assert link.heartbeat_sends == 1
-    finally:
-        link.close()
-
-
-def test_heartbeat_defers_inside_the_quiet_window_and_rearms():
-    link, handed, clock, _lock = make_link()
-    link.open()
-    try:
-        transport = handed[0]
-        clock.now = 1005.0
-        link.set_velocity(20, 0, 0)
-        # Due, but a command just went out: the firmware answers only the first
-        # command of a burst, so a `SPD` here could swallow the `V`.
-        assert link.heartbeat_tick(1005.0) is False
-        assert link.heartbeat_defers == 1
-        # Deferred ticks wait a full period rather than firing the moment the
-        # window closes.
-        assert link.heartbeat_tick(1007.0) is False
-        assert link.heartbeat_tick(1010.0) is True
-        assert transport.sent == ["STOP\r\n", "V 20 0 0\r\n", "SPD\r\n"]
-    finally:
-        link.close()
-
-
-def test_every_wire_call_pushes_the_quiet_window_out():
+def test_every_wire_call_pushes_the_silence_clock_out():
     link, _handed, clock, _lock = make_link()
     link.open()
     try:
@@ -175,35 +132,6 @@ def test_every_wire_call_pushes_the_quiet_window_out():
             clock.now += 3.0
             call()
             assert link.seconds_since_last_tx() == 0.0
-    finally:
-        link.close()
-
-
-def test_heartbeat_can_be_disabled():
-    link, handed, _clock, _lock = make_link(heartbeat_enabled=False)
-    link.open()
-    try:
-        assert link.heartbeat_tick(9999.0) is False
-        assert handed[0].sent == ["STOP\r\n"]
-    finally:
-        link.close()
-
-
-def test_heartbeat_is_silent_once_closed():
-    link, handed, _clock, _lock = make_link()
-    link.open()
-    link.close()
-    assert link.heartbeat_tick(9999.0) is False
-    assert not link.connected
-    assert handed[0].sent == ["STOP\r\n"]
-
-
-def test_heartbeat_failure_surfaces_instead_of_being_swallowed():
-    link, _handed, _clock, _lock = make_link([BrokenQueryTransport()])
-    link.open()
-    try:
-        with pytest.raises(OSError):
-            link.heartbeat_tick(1005.0)
     finally:
         link.close()
 
@@ -229,21 +157,6 @@ def test_recover_swaps_the_transport_and_confirms_stop():
         assert "SPD\r\n" in second.sent
         assert link.reconnects == 1
         assert lock.held
-    finally:
-        link.close()
-
-
-def test_recover_resumes_the_heartbeat_on_the_new_transport():
-    first = MemoryTransport()
-    second = MemoryTransport()
-    second.feed(STOPPED_SPD)
-    link, _handed, clock, _lock = make_link([first, second])
-    link.open()
-    try:
-        link.recover(OSError("Input/output error"))
-        clock.now = 9000.0
-        assert link.heartbeat_tick(9000.0) is True
-        assert second.sent[-1] == "SPD\r\n"
     finally:
         link.close()
 
@@ -283,7 +196,8 @@ def test_recover_gives_up_within_the_deadline():
 
 
 def test_recover_reports_how_long_the_wire_was_silent():
-    """The number that tells an idle teardown apart from the peer losing power."""
+    """The number that tells a brownout apart from a program that simply stopped
+    talking to the chassis."""
     messages: list[str] = []
     first = MemoryTransport()
     second = MemoryTransport()
@@ -296,36 +210,6 @@ def test_recover_reports_how_long_the_wire_was_silent():
         assert any("16.0s before the error" in message for message in messages)
     finally:
         link.close()
-
-
-# ------------------------------------------------------------ the real thread
-
-
-def test_the_heartbeat_thread_actually_drives_the_tick():
-    """The only test that starts the thread.  Polled to a deadline rather than
-    joined, so a wedged heartbeat fails the test instead of hanging the suite."""
-    transport = MemoryTransport()
-    link = ChassisLink(
-        "/dev/fake-chassis",
-        9600,
-        port_lock=FakePortLock(),
-        transport_factory=lambda _path, _baud: transport,
-        log=lambda _m: None,
-        wait_for_device=lambda *_a, **_k: None,
-        heartbeat_s=1.0,
-        heartbeat_quiet_s=0.0,
-        heartbeat_poll_s=0.05,
-    )
-    link.open()
-    try:
-        deadline = time.monotonic() + 3.0
-        while link.heartbeat_sends == 0 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert link.heartbeat_sends >= 1
-        assert "SPD\r\n" in transport.sent
-    finally:
-        link.close()
-    assert link._thread is None
 
 
 # ------------------------------------------------------------- the predicate
