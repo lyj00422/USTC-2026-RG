@@ -80,10 +80,21 @@ def test_each_pickup_area_has_explicit_motion_guards():
     assert purple.search_left.timeout_s > 0
     assert orange.search_right.max_distance_cm > 0
     assert orange.search_left.max_distance_cm > 0
-    assert purple.search_speed == 40
-    assert purple.search_speed > abs(purple.coarse_speed)
-    assert purple.coarse_speed != 0
-    assert purple.fine_speed != 0
+    # These used to be exact literals.  Both hunts were being tuned on the field
+    # every few minutes on 2026-10-02 (purple 40 -> 80 -> 40 -> 60, orange
+    # 28 -> 80 -> 48), so a literal here only meant this file went red on every
+    # tuning round while asserting nothing extra.  What the file actually
+    # guarantees is the SHAPE: the hunt is its own gear, ordered above the
+    # approach and the grab, and every value fits the chassis.
+    for area in (purple, orange):
+        assert 1 <= area.search_speed <= 100
+        assert area.search_speed > abs(area.coarse_speed) > abs(area.fine_speed)
+    # The grab's fine alignment is NOT part of the speed round: it is shared with
+    # the moment the car touches the block, so it has stayed at its v1 value
+    # through every tuning pass.  Pinned, because changing it silently would
+    # change how the car meets the block.
+    assert purple.fine_speed == 12
+    assert orange.fine_speed == 12
 
 
 def test_older_config_without_search_speed_uses_coarse_speed(tmp_path):

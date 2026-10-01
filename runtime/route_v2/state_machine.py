@@ -148,6 +148,17 @@ class RouteState(str, Enum):
     BUILD_BACK_TO_LINE = "BUILD_BACK_TO_LINE"
     BUILD_RETURN_REVERSE = "BUILD_RETURN_REVERSE"
     BUILD_TURN_LEFT = "BUILD_TURN_LEFT"
+    # The 180 at the end of the return turns the car on the spot, so it can leave
+    # it OFF the line -- and the leg that follows drives under the follower, which
+    # stops the moment line_error goes away.  This state is the guard for exactly
+    # that case: it looks at the bar first and only strafes LEFT (then right) if
+    # the line really is gone.
+    #
+    # Operator, 2026-10-02: 「搭建区搭建完 去找线 找到倒车旋转 丢线了 左移找线然后
+    # 巡线」, clarified as 「防止丢线的情况」 -- it exists for the lost-line case, not
+    # as a routine move: a car that still has the line under it falls straight
+    # through to the leg.
+    BUILD_TURN_SEEK_LINE = "BUILD_TURN_SEEK_LINE"
     FINISHED = "FINISHED"
     FAULT = "FAULT"
 
@@ -583,7 +594,7 @@ class RouteV2StateMachine:
             else self.config.seek_line_fallback_speed
 
     def _seek_line(self, now: float, sensor_mask: int, lateral_cm: float | None, *,
-                   vy: int) -> RouteIntent | None:
+                   vy: int, one_way_cm: float | None = None) -> RouteIntent | None:
         """Sweep sideways until the bar is back on the black, or give up.
 
         A turn leaves the car off the line -- it turned on the spot, on whatever
@@ -616,6 +627,12 @@ class RouteV2StateMachine:
         and a pattern requiring both END probes white never matches.  See
         seek_line_masks -- the disproof is in the recorded masks and needs no
         geometry.
+
+        `one_way_cm` turns the second phase off.  Passed by the J3 hunt only,
+        where the line is known to be on one side and the return sweep was
+        measured to cross the whole area in the WRONG direction; see the config's
+        `pickup_seek_one_way_cm`.  The sweep then runs out to that reach instead
+        and the hunt fails rather than turning round.
 
         Returns None once the line is under the bar, meaning "found it -- carry
         on with what this state does next".  Returning a stop instead would cost
@@ -655,6 +672,27 @@ class RouteV2StateMachine:
         sign = 1 if vy > 0 else -1
         reached_cm = lateral_cm * sign
 
+        if one_way_cm is not None:
+            # ONE-WAY.  Nothing reverses, so the speed stays at `vy` -- note this
+            # is `vy` and not `_seek_speed(vy)`, whose whole job is to hand back
+            # the reversed gear.
+            #
+            # `_seek_reversed` is deliberately NOT armed here, and that is a fix,
+            # not an omission.  It used to be armed at the two-phase hunt's own
+            # turnaround so that the tag takeover above stayed reachable -- but
+            # that takeover strafes the OPPOSITE way to the first sweep
+            # (`-seek_line_fallback_speed` when `vy > 0`), so arming it turned a
+            # left-going hunt into a right-going one the moment TAG3 came into
+            # view.  Operator, 2026-10-02: 「到了j3 旋转后找线 要一直左移找线」, and
+            # this is what they were watching: the car sweeping left, then
+            # leaving in the other direction.
+            if reached_cm >= one_way_cm:
+                self._seek_line_failed = True
+                return RouteIntent("stop", self.state)
+            if now - self._state_started >= self.config.seek_line_timeout_s:
+                self._seek_line_failed = True
+                return RouteIntent("stop", self.state)
+            return RouteIntent("strafe", self.state, speed=vy)
         if self._seek_reversed:
             if reached_cm <= -self.config.seek_line_max_cm:
                 self._seek_line_failed = True
@@ -863,8 +901,13 @@ class RouteV2StateMachine:
         lateral_cm: float | None = None,
         accept_any_black: bool = False,
         d_done: bool = False,
+        hunt_speed: int | None = None,
     ) -> RouteIntent | None:
         """Reverse back to J3 from the first area, the J1 creep with the sign flipped.
+
+        `hunt_speed` is the sideways hunt's magnitude; None means
+        `seek_line_fallback_speed`.  The purple path passes its own, doubled value
+        -- see `purple_return_hunt_speed`.
 
         Operator, 2026-09-15: the car is parked on a line at the area, so
         reversing loses that line and driving forward again picks up the
@@ -952,7 +995,8 @@ class RouteV2StateMachine:
         # first and alternates from there.
         return self._strafe_line_seek(
             now, sensor_mask, lateral_cm,
-            speed=self.config.seek_line_fallback_speed,
+            speed=(self.config.seek_line_fallback_speed
+                   if hunt_speed is None else hunt_speed),
             timeout_s=self.config.pickup_return_timeout_s,
             accept_any_black=accept_any_black,
             # Operator, 2026-09-22: 15 -> 20 -> 30 -> 40 -> 60 cm per segment, one
@@ -1041,6 +1085,96 @@ class RouteV2StateMachine:
             self._build_slide_exhausted = True
             return RouteIntent("stop", self.state)
         return RouteIntent("strafe", self.state, speed=-abs(self.config.build_slide_speed))
+
+    def _build_line_hunt(self, now: float, sensor_mask: int,
+                         absolute_lateral_cm: float | None) -> RouteIntent | None:
+        """Strafe LEFT (then RIGHT) until the bar is back on the line.
+
+        None means "the line is under the bar -- carry on with what this state
+        does next".  Anything else is the tick's intent.
+
+        TWO CALLERS, and they are the two places the build area has to find the
+        line again: BUILD_BACK_TO_LINE, immediately after the actions, and
+        BUILD_TURN_SEEK_LINE, after the 180 at the end of the return (where the
+        turn has left the car off the line again).  Both take their origin,
+        budget and phase from the same three fields, which `_enter` clears -- so
+        each state always starts a fresh hunt and neither inherits the other's
+        exhausted budget.
+        """
+        probes = _black_probes(sensor_mask)
+        # The route's standard line acceptance, the same one the return
+        # controller uses: enough black probes to be the line, with the
+        # all-black reading (line loss) excluded at the top of the range.
+        if (sensor_mask in self.config.seek_line_masks
+                or self.config.seek_line_min_black_probes <= probes < 8):
+            self._build_line_frames += 1
+            if self._build_line_frames >= self.config.seek_line_confirm_frames:
+                return None
+            # Confirming, same `wait`-not-`stop` reason as the align above.
+            return RouteIntent("wait", self.state,
+                               wait_s=self.config.poll_period_s)
+        self._build_line_frames = 0
+        # Accumulated offset -- how far the car has drifted sideways since it
+        # was last ON the line.  The line reference is the accumulation; the
+        # visit origin is only the fallback for a run that has not seen the
+        # line yet.
+        reference = (self._line_reference_cm
+                     if self._line_reference_cm is not None
+                     else self._build_visit_origin_cm)
+        offset = 0.0
+        if absolute_lateral_cm is not None and reference is not None:
+            offset = absolute_lateral_cm - reference
+        if self._build_line_seek_exhausted or absolute_lateral_cm is None:
+            return RouteIntent("stop", self.state)
+        if self._build_line_seek_origin is None:
+            self._build_line_seek_origin = absolute_lateral_cm
+            # Only the SIGN of the offset chooses the direction; this is the
+            # magnitude, and it only bounds how far the hunt may run.
+            #
+            # FIXED at build_line_seek_max_cm, not |offset| + margin.  The
+            # offset is measured from where the visit began, and a visit that
+            # slid 60-140 cm past the buildings leaves the line well outside
+            # that estimate -- so the old budget expired almost immediately
+            # and the car held STOP with the line just out of reach.
+            # Operator, 2026-09-30: 「优先左移找线 上限200cm 找不到才右移找线」.
+            self._build_line_seek_budget = float(
+                self.config.build_line_seek_max_cm)
+        elif abs(absolute_lateral_cm - self._build_line_seek_origin) >= self._build_line_seek_budget:
+            if self._build_line_seek_phase == 0:
+                # The left phase spent its budget.  Turn around and hunt
+                # the other way with a fresh one instead of giving up.
+                self._build_line_seek_phase = 1
+                self._build_line_seek_origin = absolute_lateral_cm
+            else:
+                # Both directions hunted out.  Hold and let the operator
+                # look, like every other failure here.
+                self._build_line_seek_exhausted = True
+                return RouteIntent("stop", self.state)
+        # LEFT FIRST, ALWAYS.  Operator, 2026-09-29: 「搭建区搭建完后 优先
+        # 往左边找线」.
+        #
+        # This used to take its direction from the sign of the accumulated
+        # offset (positive = drifted right = line is left).  That is the
+        # right answer when the reference is sound, but when it is not the
+        # hunt spent its ONE budget the wrong way and then held STOP for an
+        # operator -- a wrong first guess cost the run.  Fixing the first
+        # direction and keeping the second as a fallback makes a wrong
+        # guess cost time instead (2 x build_line_seek_margin_cm of
+        # strafing), which is what `_build_line_seek_phase` tracks.
+        #
+        # Reverting to the old sign-driven hunt = drop the phase flag and
+        # put `speed if offset >= 0 else -speed` back here.
+        # Two speeds, not one: phase 0 strafes back LEFT toward the line
+        # and phase 1 goes RIGHT again.  Right is the direction that has
+        # to cover ground (BUILD_AREA's own walk-out to the N-th position
+        # is the same gear), left is the shorter, sensor-terminated
+        # crease.  Operator, 2026-10-02: 「搭建区的右移速度和左移速度分别
+        # 改成100 70」.
+        if self._build_line_seek_phase == 0:
+            speed = abs(self.config.build_slide_left_speed)
+        else:
+            speed = -abs(self.config.build_slide_speed)
+        return RouteIntent("strafe", self.state, speed=speed)
 
     def _build_cap_seek_spent(self, absolute_lateral_cm: float | None) -> bool:
         """Has a CAP hunted past its own budget without finding a stack to centre on?
@@ -1274,18 +1408,33 @@ class RouteV2StateMachine:
             # 2026-09-15) -- the OPPOSITE side from the hunt after the J2 turn.
             # That asymmetry is the whole reason the direction is per-seek config
             # and not a shared magnitude; see _seek_line().
+            # ONE-WAY to the left: 「到了j3左旋找线 只往左边找」.  This is the only
+            # caller that passes it; see `pickup_seek_one_way_cm`.
             seeking = self._seek_line(now, sensor_mask, lateral_cm,
-                                      vy=self.config.pickup_seek_line_vy)
+                                      vy=self.config.pickup_seek_line_vy,
+                                      one_way_cm=self.config.pickup_seek_one_way_cm)
             if seeking is None:
-                self._enter(
-                    RouteState.PURPLE_PRESCAN
-                    if self.config.vision is not None
-                    else RouteState.JUNCTION_3_TO_PICKUP,
-                    now,
-                )
+                # STRAIGHT to the approach -- no prescan.
+                #
+                # Operator, 2026-10-02: 「这个版本不必要在j3判定有没有紫色了 直接
+                # 按照逻辑 先取中间 再取左边 在取右边」「一定有三个紫色」.  The area
+                # always holds all three, so the scan was answering a question whose
+                # answer never changes, and the visit's slot is now counted instead
+                # (see `next_purple_slot` and the runtime's own visit counter).
+                #
+                # The transition used to be
+                #     RouteState.PURPLE_PRESCAN if self.config.vision is not None
+                #     else RouteState.JUNCTION_3_TO_PICKUP
+                # which is why the non-visual branch already landed here.
+                self._enter(RouteState.JUNCTION_3_TO_PICKUP, now)
                 # Fall through: the line follower drives on this same tick.
             elif (self.config.vision is not None and visual.tag3_stable
                   and self._seek_reversed):
+                # UNREACHABLE as of 2026-10-02: this seek is one-way now, and the
+                # one-way branch deliberately never arms `_seek_reversed`.  Kept
+                # because it is the only way into PICKUP_TAG_LINE_TAKEOVER, and
+                # restoring the two-phase hunt above restores it in one line --
+                # see the note in `_seek_line` for why arming it was wrong.
                 self._enter(RouteState.PICKUP_TAG_LINE_TAKEOVER, now)
                 return RouteIntent(
                     "strafe",
@@ -1302,7 +1451,10 @@ class RouteV2StateMachine:
                 now,
                 sensor_mask,
                 lateral_cm,
-                RouteState.PURPLE_PRESCAN,
+                # JUNCTION_3_TO_PICKUP, not PURPLE_PRESCAN: this takeover is a
+                # different way to finish the same seek, so it lands where the
+                # seek now lands (2026-10-02, see the note there).
+                RouteState.JUNCTION_3_TO_PICKUP,
                 vy=-self.config.seek_line_fallback_speed
                 if self.config.pickup_seek_line_vy > 0
                 else self.config.seek_line_fallback_speed,
@@ -1311,6 +1463,21 @@ class RouteV2StateMachine:
                 return takeover
 
         if self.state is RouteState.PURPLE_PRESCAN:
+            # ===== RETIRED 2026-10-02: nothing enters this state any more ========
+            #
+            # Both ways in -- the seek and the tag takeover -- now go straight to
+            # JUNCTION_3_TO_PICKUP, because 「一定有三个紫色」: the scan existed to
+            # decide whether a purple was there at all and which slot to go for, and
+            # this version answers both by counting visits instead.
+            #
+            # The block is kept LIVE rather than commented out on purpose: it is
+            # short, and it is the entire body of a state the enum still declares
+            # (`vision_task_for_state` still maps it, and the tests still name it).
+            # Re-enabling the scan is the two one-line transitions above.
+            #
+            # It is also the only writer of `self.purple_target_slot`, so that
+            # field is None for the whole of a run now -- nothing reads it; the
+            # runtime keeps its own copy for the search hint and the return hunt.
             if visual.purple_prescan_present is None and visual.purple_slots is None:
                 # The scan is STILL RUNNING -- wait for it before deciding.
                 #
@@ -1407,6 +1574,10 @@ class RouteV2StateMachine:
             returning = self._return_to_j3_by_landmark(
                 now, sensor_mask, travel_cm, lateral_cm=lateral_cm,
                 accept_any_black=True, d_done=d_done,
+                # Doubled on this path only.  Operator, 2026-10-02: 「在紫色抓取
+                # 动作执行完的找线速度翻倍（包括刚取完的左移右移找线 倒车丢线旋转
+                # 找线去取物区1的速度）」.
+                hunt_speed=self.config.purple_return_hunt_speed,
             )
             if returning is None:
                 # Purple is carried through J3 and the orange trip follows in
@@ -2087,74 +2258,27 @@ class RouteV2StateMachine:
             if now <= self._state_started:
                 return RouteIntent("wait", self.state,
                                    wait_s=self.config.poll_period_s)
-            probes = _black_probes(sensor_mask)
-            # The route's standard line acceptance, the same one the return
-            # controller uses: enough black probes to be the line, with the
-            # all-black reading (line loss) excluded at the top of the range.
-            if (sensor_mask in self.config.seek_line_masks
-                    or self.config.seek_line_min_black_probes <= probes < 8):
-                self._build_line_frames += 1
-                if self._build_line_frames >= self.config.seek_line_confirm_frames:
-                    self._enter(RouteState.BUILD_RETURN_REVERSE, now)
-                else:
-                    # Confirming, same `wait`-not-`stop` reason as the align above.
-                    return RouteIntent("wait", self.state,
-                                       wait_s=self.config.poll_period_s)
+            hunting = self._build_line_hunt(now, sensor_mask, absolute_lateral_cm)
+            if hunting is None:
+                self._enter(RouteState.BUILD_RETURN_REVERSE, now)
             else:
-                self._build_line_frames = 0
-                # Accumulated offset -- how far the car has drifted sideways since it
-                # was last ON the line.  The line reference is the accumulation; the
-                # visit origin is only the fallback for a run that has not seen the
-                # line yet.
-                reference = (self._line_reference_cm
-                             if self._line_reference_cm is not None
-                             else self._build_visit_origin_cm)
-                offset = 0.0
-                if absolute_lateral_cm is not None and reference is not None:
-                    offset = absolute_lateral_cm - reference
-                if self._build_line_seek_exhausted or absolute_lateral_cm is None:
-                    return RouteIntent("stop", self.state)
-                if self._build_line_seek_origin is None:
-                    self._build_line_seek_origin = absolute_lateral_cm
-                    # Only the SIGN of the offset chooses the direction; this is the
-                    # magnitude, and it only bounds how far the hunt may run.
-                    #
-                    # FIXED at build_line_seek_max_cm, not |offset| + margin.  The
-                    # offset is measured from where the visit began, and a visit that
-                    # slid 60-140 cm past the buildings leaves the line well outside
-                    # that estimate -- so the old budget expired almost immediately
-                    # and the car held STOP with the line just out of reach.
-                    # Operator, 2026-09-30: 「优先左移找线 上限200cm 找不到才右移找线」.
-                    self._build_line_seek_budget = float(
-                        self.config.build_line_seek_max_cm)
-                elif abs(absolute_lateral_cm - self._build_line_seek_origin) >= self._build_line_seek_budget:
-                    if self._build_line_seek_phase == 0:
-                        # The left phase spent its budget.  Turn around and hunt
-                        # the other way with a fresh one instead of giving up.
-                        self._build_line_seek_phase = 1
-                        self._build_line_seek_origin = absolute_lateral_cm
-                    else:
-                        # Both directions hunted out.  Hold and let the operator
-                        # look, like every other failure here.
-                        self._build_line_seek_exhausted = True
-                        return RouteIntent("stop", self.state)
-                # LEFT FIRST, ALWAYS.  Operator, 2026-09-29: 「搭建区搭建完后 优先
-                # 往左边找线」.
-                #
-                # This used to take its direction from the sign of the accumulated
-                # offset (positive = drifted right = line is left).  That is the
-                # right answer when the reference is sound, but when it is not the
-                # hunt spent its ONE budget the wrong way and then held STOP for an
-                # operator -- a wrong first guess cost the run.  Fixing the first
-                # direction and keeping the second as a fallback makes a wrong
-                # guess cost time instead (2 x build_line_seek_margin_cm of
-                # strafing), which is what `_build_line_seek_phase` tracks.
-                #
-                # Reverting to the old sign-driven hunt = drop the phase flag and
-                # put `speed if offset >= 0 else -speed` back here.
-                speed = abs(self.config.build_slide_speed)
-                return RouteIntent("strafe", self.state,
-                                   speed=speed if self._build_line_seek_phase == 0 else -speed)
+                return hunting
+
+        if self.state is RouteState.BUILD_TURN_SEEK_LINE:
+            # Line lost after the 180 -> strafe LEFT to find it, then line-follow.
+            # A car that still has the line under the bar returns None here on its
+            # FIRST tick and goes straight on, which is the common case: this
+            # state is the guard for the lost-line case, not a routine move.
+            hunting = self._build_line_hunt(now, sensor_mask, absolute_lateral_cm)
+            if hunting is None:
+                self._enter(
+                    RouteState.DIRECT_ORANGE_D330
+                    if self.loop_context.has_purple
+                    else RouteState.JUNCTION_2_TO_JUNCTION_3,
+                    now,
+                )
+            else:
+                return hunting
 
         if self.state is RouteState.BUILD_RETURN_REVERSE:
             returning = self._back_off_straight(
@@ -2167,10 +2291,11 @@ class RouteV2StateMachine:
 
         if self.state is RouteState.BUILD_TURN_LEFT:
             if self._action_pending and d_done:
-                destination = (RouteState.DIRECT_ORANGE_D330
-                               if self.loop_context.has_purple
-                               else RouteState.JUNCTION_2_TO_JUNCTION_3)
-                self._enter(destination, now)
+                # THROUGH THE LINE GUARD, not straight onto the leg.  The 180
+                # turns on the spot, so it can leave the car off the line, and
+                # the leg that follows is line-followed -- see
+                # BUILD_TURN_SEEK_LINE.
+                self._enter(RouteState.BUILD_TURN_SEEK_LINE, now)
             else:
                 if now - self._state_started >= self.config.turn_timeout_s:
                     return RouteIntent("stop", self.state)

@@ -278,7 +278,7 @@ def test_visual_task_switch_stop_is_not_throttled_after_velocity_command():
 
     class Runtime:
         def observe(self, *, state, **_kwargs):
-            pending = state is RouteState.PURPLE_PRESCAN
+            pending = state is RouteState.PICKUP_VISION_ONLY
             return VisionRouteInput(vision_pending=pending), {
                 "vision": {
                     "task": vision_task_for_state(state).value,
@@ -299,12 +299,17 @@ def test_visual_task_switch_stop_is_not_throttled_after_velocity_command():
     chassis.commands.clear()
 
     runner.tick(.04)
-    line.mask = 0x81
+    # This used to hop onto PURPLE_PRESCAN, which was the state the seek went to.
+    # The J3 prescan is retired (2026-10-02, 「不必要在j3判定有没有紫色了」), so the
+    # seek now lands on the approach leg instead -- PICKUP_ARRIVED is a NONE-task
+    # state like the leg it stands in for, and it hands straight to
+    # PICKUP_VISION_ONLY, whose task differs.  Same switch, same assertion.
+    runner.machine._enter(RouteState.PICKUP_ARRIVED, .05)
     runner.tick(.06)
 
-    assert runner.machine.state is RouteState.PURPLE_PRESCAN
+    assert runner.machine.state is RouteState.PICKUP_VISION_ONLY
     assert chassis.commands == [
-        ("V", 0, runner.config.junction_2_seek_line_vy, 0), ("STOP",),
+        ("V", 0, runner.config.pickup_seek_line_vy, 0), ("STOP",),
     ]
 
 
@@ -364,9 +369,54 @@ def _orange_vision_runtime():
     runtime._orange_search_origin_cm = None
     runtime._orange_origin_state = None
     runtime._orange_visit_count = 0
+    runtime._purple_visit_count = 0
+    runtime._purple_origin_state = None
     runtime._purple_target_slot = None
     runtime._purple_search_hint = None
     return runtime
+
+
+def test_purple_visits_walk_the_slots_middle_left_right(monkeypatch):
+    """「先取中间 再取左边 在取右边」, counted per VISIT.
+
+    The J3 prescan that used to decide this is retired (「不必要在j3判定有没有紫色了
+    ... 一定有三个紫色」), so the route just counts.  The first look follows the slot
+    -- 「只有一个紫色在左边 就立马去左边取」 -- and the in-visit re-selections after a
+    grab must NOT advance the count, or the second look of one visit would aim at
+    the next structure's block.
+    """
+    import run_route_v2
+
+    seen = []
+
+    class PickupController:
+        def __init__(self, *args, initial_search, **kwargs):
+            seen.append(initial_search)
+
+    monkeypatch.setattr(run_route_v2, "PickupVisionController", PickupController)
+    runtime = _orange_vision_runtime()
+
+    runtime._select(VisionTask.PURPLE_CLOSE, RouteState.PICKUP_VISION_ONLY, 0.0)
+    assert runtime._purple_visit_count == 1
+    assert runtime._purple_target_slot == 2
+    # The grab suspends the task and the tick re-selects it: same visit.
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.PURPLE_CLOSE, RouteState.PICKUP_VISION_ONLY, 4.0)
+    assert runtime._purple_visit_count == 1, "a re-selection is not a new visit"
+
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.TAG4, RouteState.PICKUP_2_SEEK_LINE, 0.0)
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.PURPLE_CLOSE, RouteState.PICKUP_VISION_ONLY, 8.0)
+    assert runtime._purple_target_slot == 1
+
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.TAG4, RouteState.PICKUP_2_SEEK_LINE, 0.0)
+    runtime._task = VisionTask.NONE
+    runtime._select(VisionTask.PURPLE_CLOSE, RouteState.PICKUP_VISION_ONLY, 12.0)
+    assert runtime._purple_target_slot == 3
+
+    assert seen == ["center", "center", "left", "right"]
 
 
 def _leave_the_orange_area(runtime):

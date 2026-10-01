@@ -452,6 +452,28 @@ class RouteV2Config:
     # what stops the first sweep driving into whatever is out there -- but it is
     # no longer the point at which the hunt gives up.
     seek_line_max_cm: int = 35
+    # The ONE-WAY reach of the J3-after-left-turn hunt (`PICKUP_SEEK_LINE` only).
+    #
+    # Operator, 2026-10-02: 「到了j3左旋找线 只往左边找」 -- that hunt must never
+    # turn round.  What the car was doing instead was sweeping left 35 cm, finding
+    # nothing (the line is further out than that: the deployed note records a run
+    # that only found it at 41.8 cm), reversing, and crossing the whole area to the
+    # RIGHT -- which reads on the track as "it is looking the wrong way".
+    #
+    # 70 is the ground the old two-phase hunt covered IN TOTAL (35 out and 35 back
+    # through the origin), spent all of it on the side the line is actually on.  A
+    # hunt that runs out of 70 cm has genuinely lost the line, and says so:
+    # `_seek_line_failed` plus a STOP, rather than reversing into a direction that
+    # is known to be wrong.
+    #
+    # Only this hunt passes it.  The other three keep the two-phase sweep.
+    pickup_seek_one_way_cm: int = 70
+    # The sideways hunt inside `PURPLE_RETURN_TO_J3` -- 「倒车丢线 -> 右旋 -> 横移
+    # 找线」.  Same magnitude class as `seek_line_fallback_speed` (it inherits it
+    # when unset), but its own key because the purple path runs it at double speed
+    # and `PICKUP_1_RETURN` -- the other caller of `_return_to_j3_by_landmark` --
+    # must not.
+    purple_return_hunt_speed: int = 40
     # Fallback line search after a grab when no net lateral displacement gives a
     # reliable direction. Orange normally searches opposite its net displacement;
     # purple uses its known pickup slot. This bounded swing handles the remaining
@@ -767,6 +789,26 @@ class RouteV2Config:
     # imports THIS module; a tuple of strings is resolved and checked in
     # _validate below, which imports the enum lazily.
     hold_course_on_line_loss: tuple[str, ...] = ()
+    # A LEFTWARD velocity, applied on the hold-course legs while the line is lost.
+    #
+    # Operator, 2026-10-02: 「取物区1 去完橙色 倒车旋转去... 的时候 还是即使丢线就
+    # 一直走 但是可以往左边pid调整到线上 因为一定会右偏」「如果丢线」.
+    #
+    # The hold-course branch used to be dead-straight -- `set_velocity(vx, 0, 0)` --
+    # on the reasoning that a lost line has no error to steer by, and a made-up one
+    # turns a stutter into a swerve.  That reasoning still holds for a stutter.  It
+    # does not hold for the case this key is for: a line that is genuinely gone
+    # BECAUSE the car has drifted right, which on this leg the operator knows it
+    # does.  A constant leftward vy is exactly the right shape of correction for a
+    # constant sideways bias -- it is the integral term, applied by hand, for a leg
+    # where the sensor cannot supply one.
+    #
+    # 0 restores the dead-straight behaviour.  Positive vy strafes LEFT, the
+    # route's usual sign convention.  20 is ~10.8 cm/s of leftward travel at the
+    # measured rate for this chassis (~0.54 cm/s per vy unit); raise it if the car
+    # still ends up right of the line, and it only ever applies while the line is
+    # LOST -- the moment a reading comes back, the PID owns the steering again.
+    hold_course_left_bias_vy: int = 0
     # --- The three trips out of J3 (operator, 2026-09-15) --------------------
     #
     # Three legs leave J3, each ending in a wall contact; the first two return to
@@ -926,7 +968,16 @@ class RouteV2Config:
     # Same class as the pickup areas' fine_speed (measured ~4 cm/s lateral).
     # Deliberately NOT the coarse/search speed: this is a positioning move that
     # has to stop on a vision reading, and stopping distance is what overshoots.
+    # 2026-10-02: split into a RIGHT speed and a LEFT speed, because they are not
+    # the same move.  Operator: 「搭建区的右移速度和左移速度分别改成100 70」.
+    #   * right (`build_slide_speed`) -- how BUILD_AREA walks out to the N-th
+    #     position, and the second half of BUILD_BACK_TO_LINE's own hunt.  100 is
+    #     the chassis ceiling.
+    #   * left (`build_slide_left_speed`) -- only the first half of that hunt, the
+    #     strafe back toward the line, which is a sensor-terminated crease and so
+    #     keeps the slower gear.
     build_slide_speed: int = 20
+    build_slide_left_speed: int = 70
     # How much further right a PLACEMENT visit goes after the view first goes
     # clear, before it commits to the action.
     #
@@ -1121,6 +1172,10 @@ def load_route_v2_config(
             raise ValueError(f"{name} must be a non-zero lateral velocity in -100..100")
     if cfg.seek_line_max_cm <= 0:
         raise ValueError("seek_line_max_cm must be positive")
+    if cfg.pickup_seek_one_way_cm <= cfg.seek_line_max_cm:
+        # The one-way reach has to get PAST the two-phase sweep's own turnaround,
+        # or the hunt would give up before the sweep it replaces ever reversed.
+        raise ValueError("pickup_seek_one_way_cm must exceed seek_line_max_cm")
     if cfg.pickup_return_line_swing_cm:
         if any(value <= 0 for value in cfg.pickup_return_line_swing_cm):
             raise ValueError("pickup_return_line_swing_cm amplitudes must be positive")
@@ -1207,6 +1262,8 @@ def load_route_v2_config(
         raise ValueError("build_slide_max_cm must be positive")
     if not 1 <= abs(cfg.build_slide_speed) <= 100:
         raise ValueError("build_slide_speed must be a non-zero lateral speed in 1..100")
+    if not 1 <= abs(cfg.build_slide_left_speed) <= 100:
+        raise ValueError("build_slide_left_speed must be a non-zero lateral speed in 1..100")
     if cfg.build_place_extra_right_cm < 0:
         raise ValueError("build_place_extra_right_cm cannot be negative")
     if not 0 < cfg.build_align_tolerance <= 0.5:
@@ -1230,6 +1287,10 @@ def load_route_v2_config(
         # bolted alongside it: past build_slide_max_cm the slide latches anyway, so
         # a larger cap budget would just be dead config pretending to be a bound.
         raise ValueError("build_cap_seek_max_cm must not exceed build_slide_max_cm")
+    if not 0 <= cfg.hold_course_left_bias_vy <= 100:
+        # A magnitude, like every other lateral speed here.  Negative would strafe
+        # RIGHT while the car is already known to be right of the line.
+        raise ValueError("hold_course_left_bias_vy must be a leftward magnitude in 0..100")
     if cfg.hold_course_on_line_loss:
         # Lazy import: state_machine imports this module at module level, so
         # importing it at the top of the file would be circular.  By the time a

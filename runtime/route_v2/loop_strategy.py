@@ -5,6 +5,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+# The purple area's three slots in the order the single-chassis round takes them.
+#
+# Operator, 2026-10-02: 「这个版本不必要在j3判定有没有紫色了 直接按照逻辑 先取中间
+# 再取左边 在取右边」「一定有三个紫色」.  So the slot is not a DECISION any more --
+# the area always holds all three, and which one this visit goes for is just how
+# many visits have already gone.  Slot numbers are the prescan's own: 1 = left,
+# 2 = centre, 3 = right (see the `_select` hint map in run_route_v2).
+PURPLE_PICK_ORDER = (2, 1, 3)
+
+
+def next_purple_slot(visit: int) -> int:
+    """Which slot the `visit`-th purple comes from -- 1-based, 中 -> 左 -> 右.
+
+    Past the third visit the order holds on the last entry rather than raising:
+    「一定有三个紫色」 is the field promise, and a fourth visit means the earlier
+    ones did not land, not that the route should fault.
+    """
+    if visit < 1:
+        raise ValueError("purple visit numbers start at 1")
+    index = min(visit, len(PURPLE_PICK_ORDER)) - 1
+    return PURPLE_PICK_ORDER[index]
+
+
 def choose_purple_slot(slots: tuple[bool, bool, bool]) -> int | None:
     if len(slots) != 3:
         raise ValueError("purple slots must contain exactly three booleans")

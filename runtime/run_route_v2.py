@@ -29,7 +29,11 @@ from route_v2.pickup_vision import (
     purple_slots_from_result,
 )
 from route_v2.evidence import OrangeEvidenceRecorder
-from route_v2.loop_strategy import apply_build_action, choose_purple_slot
+from route_v2.loop_strategy import (
+    apply_build_action,
+    choose_purple_slot,
+    next_purple_slot,
+)
 from route_v2.state_machine import (
     RouteIntent, RouteState, RouteV2StateMachine, VisionRouteInput,
 )
@@ -173,9 +177,13 @@ class RouteVisionRuntime:
         # on the same test the origin latch above uses, and read by `_first_look`
         # to pick the sweep direction -- see `_ORANGE_RIGHT_FIRST_VISIT`.
         self._orange_visit_count = 0
-        # The purple block the route is going for, by the state machine's own
-        # rule (loop_strategy.choose_purple_slot), decided at J3.  Kept here so
-        # the return hunt's direction cannot disagree with the pickup.
+        # The purple area's own pair, same idea.  The slot is no longer a DECISION
+        # (the J3 prescan that used to make it is retired): it is the visit count
+        # read through `loop_strategy.next_purple_slot` -- 中 -> 左 -> 右.
+        self._purple_visit_count = 0
+        self._purple_origin_state: RouteState | None = None
+        # The purple block the route is going for.  Kept here so the pickup's first
+        # look and the return hunt's direction cannot disagree with each other.
         self._purple_target_slot: int | None = None
         self._return_controller: PickupReturnController | None = None
 
@@ -246,11 +254,16 @@ class RouteVisionRuntime:
         后面两次往右边找」 -- and the operator's round is 「到J3 左旋去取物区2 取一个紫色
         到取物区1取两个橙色 到了搭建区 直接搭建三层 重复3次」, so the three visits are
         the three structures: the first sweeps left, and the two after it start on
-        the right, where the blocks still are.  Purple answers "right"; `_select`
-        overrides it with the prescan's own slot.
+        the right, where the blocks still are.
+
+        The purple area's answer is its slot, which `_select` has already counted
+        for this visit (「先取中间 再取左边 在取右边」).  It reads "center" if the
+        slot is somehow unset -- centre is the widest of the three, so a bad guess
+        there sweeps both ways from the middle.
         """
-        if area != "orange":
-            return "right"
+        if area == "purple":
+            return {1: "left", 2: "center", 3: "right"}.get(
+                self._purple_target_slot, "center")
         return ("right" if self._orange_visit_count >= _ORANGE_RIGHT_FIRST_VISIT
                 else "left")
 
@@ -261,6 +274,8 @@ class RouteVisionRuntime:
         if state is not RouteState.PICKUP_2_VISION_ONLY:
             # Left the area: the next visit latches its own entry pose.
             self._orange_origin_state = None
+        if state is not RouteState.PICKUP_VISION_ONLY:
+            self._purple_origin_state = None
         self._task = task
         self._generation = self.worker.select(task)
         self._task_selected_at = self.clock()
@@ -283,17 +298,27 @@ class RouteVisionRuntime:
                 # this task after every grab and the tick re-selects it, and those
                 # re-selections are the same visit.
                 self._orange_visit_count += 1
-            # Which block the car goes for is already known (the prescan slot), so
-            # the pickup's FIRST look goes straight at it instead of sweeping.
+            if area == "purple" and state is not self._purple_origin_state:
+                # A NEW visit to the purple area, the same test and the same
+                # reasoning as the orange one above.  The slot this visit goes for
+                # is the visit count read through `next_purple_slot` --
+                # 「先取中间 再取左边 在取右边」, and 「一定有三个紫色」.
+                #
+                # `_purple_origin_state` is written HERE rather than by the shared
+                # latch further down (there is no purple equivalent of the orange
+                # origin-pose latch; the purple return hunt takes its direction
+                # from `_purple_target_slot` instead).
+                self._purple_visit_count += 1
+                self._purple_target_slot = next_purple_slot(self._purple_visit_count)
+                self._purple_origin_state = state
+            # Which block the car goes for is already known -- the counted slot for
+            # purple, the visit count for orange -- so the pickup's FIRST look goes
+            # straight at it instead of sweeping.
             #   Operator, 2026-09-22 night: "只有一个紫色在左边 就立马去左边取".
-            # The hint alone is not enough -- it is None whenever the prescan ends
-            # on region counts rather than a confirmed centre, and the old
-            # `hint or "right"` default is what sent the first sweep right past a
-            # left-hand block in run 20260922_214120.
+            # The old `hint or "right"` default is what sent the first sweep right
+            # past a left-hand block in run 20260922_214120, and the hint is gone
+            # with the prescan, so the slot is now the only input.
             first_look = self._first_look(area)
-            if area == "purple":
-                first_look = ({1: "left", 2: "center", 3: "right"}.get(
-                    self._purple_target_slot) or self._purple_search_hint or "right")
             self._pickup_controller = PickupVisionController(
                 area,
                 area_cfg,
@@ -1517,13 +1542,20 @@ class RouteRunner:
                 # This leg's line detection stutters while the car is ON the
                 # line, so a lost frame is noise rather than news.  Stopping for
                 # it turns a 3.2 m straight into stop-start; hold the heading
-                # instead.  Straight vx only -- there is no error to steer by,
-                # and inventing one is how a stutter becomes a swerve.
+                # instead.
+                #
+                # The heading is held with vx ONLY by default -- there is no error
+                # to steer by, and inventing one is how a stutter becomes a
+                # swerve.  `hold_course_left_bias_vy` is the operator's exception
+                # to that, for the case where the line is gone because the car has
+                # drifted: a constant leftward vy against a known rightward bias.
+                # It is 0 unless a leg asks for it.  See the config.
+                bias = self.config.hold_course_left_bias_vy
                 if now - self._last_v_at >= 0.25:
-                    self.chassis.set_velocity(intent.speed, 0, 0)
+                    self.chassis.set_velocity(intent.speed, bias, 0)
                     self._last_v_at = now
                     self._last_stop_at = -float("inf")
-                    issued = f"V {intent.speed} 0 0"
+                    issued = f"V {intent.speed} {bias} 0"
             elif output.line_lost:
                 issued = self._command_stop(now) or issued
             elif now - self._last_v_at >= 0.25:

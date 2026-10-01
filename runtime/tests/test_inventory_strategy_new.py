@@ -1,10 +1,35 @@
+import pytest
+
 from route_v2.loop_strategy import (
     LoopContext,
     apply_build_action,
     build_plan_for_inventory,
+    next_purple_slot,
     next_route_after_build,
     orange_capacity,
 )
+
+
+def test_the_purple_slots_are_taken_middle_left_right_by_visit():
+    """「先取中间 再取左边 在取右边」 -- the slot is counted, not decided.
+
+    Operator, 2026-10-02: 「这个版本不必要在j3判定有没有紫色了 直接按照逻辑 ...」
+    and 「一定有三个紫色」.  Slot numbers are the prescan's own: 1 left, 2 centre,
+    3 right.
+    """
+    assert [next_purple_slot(v) for v in (1, 2, 3)] == [2, 1, 3]
+
+
+def test_a_fourth_purple_visit_holds_on_the_last_slot_instead_of_raising():
+    """「一定有三个紫色」 is the field promise.  A fourth visit means the earlier
+    ones did not land -- not a reason to fault the run."""
+    assert next_purple_slot(4) == 3
+    assert next_purple_slot(9) == 3
+
+
+def test_purple_visit_numbers_are_one_based():
+    with pytest.raises(ValueError):
+        next_purple_slot(0)
 
 
 def test_capacity_is_three_total_and_purple_uses_one_slot():
