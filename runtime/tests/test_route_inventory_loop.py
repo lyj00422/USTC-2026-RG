@@ -388,6 +388,20 @@ def test_build_area_place_skips_two_known_buildings_from_an_empty_arrival():
     assert committed.state is RouteState.BUILD_ACTION
 
 
+def test_build_area_ignores_small_orange_fragments_when_counting_passed_buildings():
+    """Accepted colour fragments below the ROI threshold are not buildings."""
+    machine = _place_machine()
+    machine.loop_context.building_count = 1
+    fragment = VisionRouteInput(build_block_visible=True, build_roi_fill=0.05)
+
+    for index in range(machine.config.build_slide_clear_frames + 1):
+        result = machine.step(0.1 + index * 0.1, vision=fragment,
+                              absolute_lateral_cm=0.0)
+
+    assert result.kind == "strafe"
+    assert machine._build_blobs_passed == 1
+
+
 def test_build_area_place_keeps_going_after_the_view_clears():
     """The gap between two structures is set by build_place_extra_right_cm, not by
     where the detector happened to lose the last blob.

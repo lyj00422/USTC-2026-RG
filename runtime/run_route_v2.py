@@ -548,6 +548,7 @@ class RouteVisionRuntime:
                 build_block_visible=bool(value.accepted),
                 build_center_error=center_error,
                 build_block_clipped=block_clipped,
+                build_roi_fill=roi_fill,
                 camera_fault=camera_fault,
             )
 

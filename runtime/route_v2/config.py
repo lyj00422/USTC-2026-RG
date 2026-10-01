@@ -882,6 +882,9 @@ class RouteV2Config:
     build_slide_speed: int = 12
     # The first actual building starts 5 cm to the right of the arrival pose.
     build_first_right_cm: float = 5.0
+    # Accepted orange fragments below this fraction of the build ROI are noise,
+    # not a whole building occupying the camera window.
+    build_min_roi_fill: float = 0.20
     # How much further right a PLACEMENT visit goes after the view first goes
     # clear, before it commits to the action.
     #
@@ -1157,6 +1160,8 @@ def load_route_v2_config(
         raise ValueError("build_slide_clear_frames must be at least 1")
     if cfg.build_first_right_cm < 0:
         raise ValueError("build_first_right_cm cannot be negative")
+    if not 0 <= cfg.build_min_roi_fill <= 1:
+        raise ValueError("build_min_roi_fill must be within [0, 1]")
     if cfg.build_next_cap_full_frames < 1:
         raise ValueError("build_next_cap_full_frames must be at least 1")
     if cfg.build_slide_max_cm <= 0:

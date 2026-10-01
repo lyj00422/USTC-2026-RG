@@ -224,6 +224,9 @@ class VisionRouteInput:
     # 橙色丢出视野 空 然后又有橙色从右边进入视野 移动 橙色占满」-- and only once
     # a structure is framed with space around it can it be centred on.
     build_block_clipped: bool = False
+    # Largest accepted orange contour area divided by the build ROI area.
+    # None keeps direct state-machine tests backwards-compatible.
+    build_roi_fill: float | None = None
 
 
 class RouteV2StateMachine:
@@ -1741,6 +1744,9 @@ class RouteV2StateMachine:
             # A clipped blob remains occupied here: it may be the close face of
             # a real building, and must leave the view before placement proceeds.
             occupancy_visible = bool(visual.build_block_visible)
+            if (occupancy_visible and visual.build_roi_fill is not None
+                    and visual.build_roi_fill < self.config.build_min_roi_fill):
+                occupancy_visible = False
 
             # One "building passed" = a blob that WAS in view has left it, held
             # absent over build_slide_clear_frames so detector flicker cannot count
@@ -1786,7 +1792,11 @@ class RouteV2StateMachine:
                     # the frame centre rather than the stack centre and miss it.
                     if self._build_blobs_passed < skip:
                         return self._build_slide_right(absolute_lateral_cm)
-                    if visual.build_block_visible:
+                    target_visible = bool(visual.build_block_visible)
+                    if (target_visible and visual.build_roi_fill is not None
+                            and visual.build_roi_fill < self.config.build_min_roi_fill):
+                        target_visible = False
+                    if target_visible:
                         self._build_next_cap_seen = True
                         self._build_next_cap_absent_frames = 0
                     elif self._build_next_cap_seen:
@@ -1796,7 +1806,7 @@ class RouteV2StateMachine:
                             return RouteIntent("stop", self.state)
                         return RouteIntent("wait", self.state,
                                            wait_s=self.config.poll_period_s)
-                    if visual.build_block_visible and visual.build_block_clipped:
+                    if target_visible and visual.build_block_clipped:
                         self._build_find_frames += 1
                         if self._build_find_frames >= self.config.build_next_cap_full_frames:
                             prepare_build_plan(self.loop_context)
@@ -1843,7 +1853,7 @@ class RouteV2StateMachine:
                 # shreds under motion (that run's rejected-blob count swung 0..250
                 # per frame) settle before the reading is trusted.
                 found = (self._build_blobs_passed >= skip
-                         and visual.build_block_visible
+                         and occupancy_visible
                          and visual.build_center_error is not None
                          and not (skip > 0 and visual.build_block_clipped))
                 if not found:
