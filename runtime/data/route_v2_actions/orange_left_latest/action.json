@@ -5,6 +5,14 @@
   "started_at": "2026-09-26T14:56:12.179662+00:00",
   "steps": [
     {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 1,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
       "kind": "SERVO",
       "id": 3,
       "position": 1650,

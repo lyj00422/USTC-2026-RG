@@ -2,6 +2,7 @@ import pytest
 
 from route_v2.loop_strategy import (
     LoopContext,
+    all_orange_round,
     apply_build_action,
     build_plan_for_inventory,
     next_purple_slot,
@@ -10,21 +11,21 @@ from route_v2.loop_strategy import (
 )
 
 
-def test_the_purple_slots_are_taken_middle_left_right_by_visit():
-    """「先取中间 再取左边 在取右边」 -- the slot is counted, not decided.
+def test_the_purple_slots_are_taken_middle_right_left_by_visit():
+    """「第一次中间 第二次右边」 -- the slot is counted, not decided.
 
     Operator, 2026-10-02: 「这个版本不必要在j3判定有没有紫色了 直接按照逻辑 ...」
-    and 「一定有三个紫色」.  Slot numbers are the prescan's own: 1 left, 2 centre,
-    3 right.
+    and 「一定有三个紫色」, then later 「紫色抓取 固定成 第一次中间 第二次右边」.
+    Slot numbers are the prescan's own: 1 left, 2 centre, 3 right.
     """
-    assert [next_purple_slot(v) for v in (1, 2, 3)] == [2, 1, 3]
+    assert [next_purple_slot(v) for v in (1, 2, 3)] == [2, 3, 1]
 
 
 def test_a_fourth_purple_visit_holds_on_the_last_slot_instead_of_raising():
     """「一定有三个紫色」 is the field promise.  A fourth visit means the earlier
     ones did not land -- not a reason to fault the run."""
-    assert next_purple_slot(4) == 3
-    assert next_purple_slot(9) == 3
+    assert next_purple_slot(4) == 1
+    assert next_purple_slot(9) == 1
 
 
 def test_purple_visit_numbers_are_one_based():
@@ -92,6 +93,25 @@ def test_orange_only_inventory_uses_count_based_build_plan():
 def test_purple_inventory_skips_j3_and_empty_purple_inventory_visits_j3():
     assert next_route_after_build(LoopContext(purple_count=1)) == "DIRECT_ORANGE_D330"
     assert next_route_after_build(LoopContext()) == "J3_PURPLE_CHECK"
+
+
+def test_the_third_structure_round_also_skips_j3_and_the_purple_area():
+    """「第三次从搭建区去取物 去取3个橙色 然后执行动作直接搭建三层」.
+
+    Confirmed on 2026-10-02 as 「搭第3栋（最后一次）」 -- so this is the round that
+    starts with TWO structures standing, not the one after them.
+    """
+    one_up = LoopContext(building_count=1)
+    two_up = LoopContext(building_count=2)
+    three_up = LoopContext(building_count=3)
+
+    assert not all_orange_round(one_up)
+    assert next_route_after_build(one_up) == "J3_PURPLE_CHECK"
+    assert all_orange_round(two_up)
+    assert next_route_after_build(two_up) == "DIRECT_ORANGE_D330"
+    # Nothing stops the route after the third structure, so a fourth round is
+    # fetched the same way rather than reaching for a purple the car never took.
+    assert all_orange_round(three_up)
 
 
 def test_build_consumption_clears_explicitly_consumed_inventory():

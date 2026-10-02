@@ -5,6 +5,14 @@
   "started_at": "2026-10-01T13:52:32.369018+00:00",
   "steps": [
     {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 5,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
       "kind": "SERVO",
       "id": 3,
       "position": 1000,
@@ -222,6 +230,22 @@
       "kind": "CHASSIS",
       "command": "stop",
       "timestamp": "2026-10-01T13:55:18.787965+00:00"
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 1,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    },
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 0,
+      "right_cm": 2,
+      "rotate_deg": 0,
+      "speed": 20
     },
     {
       "kind": "SERVO",

@@ -77,6 +77,12 @@
       "name": "从左吸搭第三层",
       "source": "local-materials/new-pkgs-20260929/cap_purple_latest",
       "window_required": false
+    },
+    "build_advance": {
+      "path": "build_advance_latest",
+      "name": "搭建两层后前进5cm",
+      "source": "operator-20261002",
+      "window_required": false
     }
   }
 }

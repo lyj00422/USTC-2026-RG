@@ -314,6 +314,14 @@ class RouteV2Config:
     # window still holds several samples.  This is the ceiling for that reason --
     # past here the window is under ten samples wide.
     tag2_strafe_speed: int = 80
+    # Every RIGHT 90-degree turn on the route, in degrees -- the strafe's turn at
+    # tag 2, the return-to-J3 landmark turn, and the J3 -> area 1 turn.  The left
+    # turns still read the shared `turn_deg`.
+    #
+    # 88, was 90.  Operator, 2026-10-02: 「车子的j1横移后的右旋90度改成88度」,
+    # then 「所有的右旋90改成88」.  Same shape as `pickup_3_turn_deg`, which is how
+    # the one 180 keeps its own number.
+    turn_right_deg: int = 90
     # After the right turn the car is sitting on the all-black area, NOT on a
     # line -- the bar reads 00000000.  Measured 2026-09-15: the mask went
     # 10000000 -> 00000000 forty centimetres in and never changed again for the
@@ -1152,6 +1160,8 @@ def load_route_v2_config(
         # to the right; a negative value here would double the negation and
         # strafe left.
         raise ValueError("tag2_strafe_speed must be a magnitude between 1 and 100")
+    if not 0 < cfg.turn_right_deg <= 180:
+        raise ValueError("turn_right_deg must be in 0..180")
     if not cfg.seek_line_masks:
         raise ValueError("seek_line_masks must not be empty")
     for mask in cfg.seek_line_masks:

@@ -1,6 +1,22 @@
 from route_v2.config import RouteV2Config
-from route_v2.loop_strategy import LoopContext
+from route_v2.loop_strategy import LoopContext, build_plan_for_inventory
 from route_v2.state_machine import RouteState, RouteV2StateMachine, VisionRouteInput
+
+
+def _leave_the_build_area(machine, *, at: float = 0.1):
+    """Drive the 180 and its lost-line guard, and return the departure.
+
+    BUILD_TURN_LEFT's 180 no longer hands straight to the leg: it goes through
+    BUILD_TURN_SEEK_LINE (the guard for a turn that leaves the bar off the
+    line), and that guard runs the standard line acceptance first.  `0x81` is
+    one of `seek_line_masks`, so two accepted ticks -- `seek_line_confirm_frames`
+    -- release it.  Every test here cares about the leg it picks, not the turn.
+    """
+    machine._enter(RouteState.BUILD_TURN_LEFT, at)
+    machine.step(at)
+    machine.step(at + 0.1, d_done=True)
+    machine.step(at + 0.2, sensor_mask=0x81)
+    return machine.step(at + 0.3, sensor_mask=0x81)
 
 
 def test_build_return_line_follows_to_the_second_area_while_purple_is_carried():
@@ -13,30 +29,53 @@ def test_build_return_line_follows_to_the_second_area_while_purple_is_carried():
     config = RouteV2Config()
     machine = RouteV2StateMachine(config)
     machine.loop_context.record_purple()
-    machine._enter(RouteState.BUILD_TURN_LEFT, 0.0)
 
-    turn = machine.step(0.1)
-    assert turn.rotate_deg == 180
-    following = machine.step(0.2, d_done=True)
+    following = _leave_the_build_area(machine)
     assert following.state is RouteState.DIRECT_ORANGE_D330
     assert following.kind == "v"
 
     gate = config.direct_orange_distance_cm
-    short = machine.step(0.3, travel_cm=gate - 1.0)
+    short = machine.step(0.5, travel_cm=gate - 1.0)
     assert short.state is RouteState.DIRECT_ORANGE_D330
     assert short.kind == "v"
 
-    machine.step(0.4, travel_cm=gate)
+    machine.step(0.6, travel_cm=gate)
     assert machine.state is not RouteState.DIRECT_ORANGE_D330
 
 
 def test_build_return_routes_to_j3_without_purple():
     machine = RouteV2StateMachine(RouteV2Config())
-    machine._enter(RouteState.BUILD_TURN_LEFT, 0.0)
-    machine.step(0.1)
 
-    result = machine.step(0.2, d_done=True)
+    result = _leave_the_build_area(machine)
     assert result.state is RouteState.JUNCTION_2_TO_JUNCTION_3
+
+
+def test_the_third_round_leaves_the_build_area_for_the_orange_area_directly():
+    """The all-orange round goes 搭建区 -> 取物区1 without touching J3.
+
+    Operator, 2026-10-02: 「第三次从搭建区去取物 去取3个橙色 然后执行动作直接搭建三层」,
+    confirmed as the round that BUILDS the third structure (「搭第3栋（最后一次）」)
+    and as 「直接去」 for the leg.  Two structures standing is what makes it that
+    round; the car reaches the orange area EMPTY, so all three slots fill with
+    orange and the build area is handed the all-orange three-layer plan.
+    """
+    machine = RouteV2StateMachine(RouteV2Config())
+    machine.loop_context.building_count = 2
+
+    result = _leave_the_build_area(machine)
+
+    assert result.state is RouteState.DIRECT_ORANGE_D330
+    assert result.kind == "v"
+    for _ in range(3):
+        machine.loop_context.record_orange()
+    assert build_plan_for_inventory(machine.loop_context) == ("BUILD_3",)
+
+
+def test_only_the_third_round_takes_that_shortcut():
+    machine = RouteV2StateMachine(RouteV2Config())
+    machine.loop_context.building_count = 1
+
+    assert _leave_the_build_area(machine).state is RouteState.JUNCTION_2_TO_JUNCTION_3
 
 
 def test_orange_success_returns_directly_to_search_or_return_without_d20():

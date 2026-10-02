@@ -8,6 +8,7 @@ from .line_control import JunctionDebouncer
 from .loop_strategy import (
     CAP_ACTIONS,
     LoopContext,
+    all_orange_round,
     build_plan_for_inventory,
     choose_purple_slot,
     prepare_build_plan,
@@ -982,8 +983,12 @@ class RouteV2StateMachine:
                 # RIGHT, not left: operator, 2026-09-22, after watching the left
                 # version -- "把j3倒车丢线后的旋转改成右旋".
                 self._return_turn_issued = True
+                # The shared RIGHT-90 angle (88 since 2026-10-02), see
+                # `turn_right_deg`; the left turns keep `turn_deg`.
                 return RouteIntent("d", self.state,
-                                   rotate_deg=self._turn_deg(left=False),
+                                   rotate_deg=self._turn_deg(
+                                       left=False,
+                                       deg=self.config.turn_right_deg),
                                    speed=self.config.turn_speed)
         # LEFT first, and NOT from the purple slot.
         #
@@ -1316,8 +1321,15 @@ class RouteV2StateMachine:
                 if now - self._state_started >= self.config.turn_timeout_s:
                     return RouteIntent("stop", self.state)
                 self._action_pending = True
-                return RouteIntent("d", self.state, rotate_deg=self._turn_deg(left=False),
-                                   speed=self.config.turn_speed)
+                # The shared RIGHT-90 angle, so this turn and the two other
+                # right-90s move together.  Operator, 2026-10-02: 「车子的j1横移
+                # 后的右旋90度改成88度」, then 「所有的右旋90改成88」 -- see
+                # `turn_right_deg`; the left turns still read `turn_deg`.
+                return RouteIntent(
+                    "d", self.state,
+                    rotate_deg=self._turn_deg(left=False,
+                                              deg=self.config.turn_right_deg),
+                    speed=self.config.turn_speed)
 
         if self.state is RouteState.JUNCTION_2_SEEK_LINE:
             # After the RIGHT turn at tag 2 the line is to the car's LEFT.
@@ -1624,7 +1636,10 @@ class RouteV2StateMachine:
                 if now - self._state_started >= self.config.turn_timeout_s:
                     return RouteIntent("stop", self.state)
                 self._action_pending = True
-                return RouteIntent("d", self.state, rotate_deg=self._turn_deg(left=False),
+                return RouteIntent("d", self.state,
+                                   rotate_deg=self._turn_deg(
+                                       left=False,
+                                       deg=self.config.turn_right_deg),
                                    speed=self.config.turn_speed)
 
         if self.state is RouteState.PICKUP_2_SEEK_LINE:
@@ -2271,9 +2286,17 @@ class RouteV2StateMachine:
             # state is the guard for the lost-line case, not a routine move.
             hunting = self._build_line_hunt(now, sensor_mask, absolute_lateral_cm)
             if hunting is None:
+                # WHERE THE DEPARTURE GOES.  Straight down the 搭建区 -> 取物区1 leg
+                # when this round only wants orange -- either because a purple is
+                # still on the chassis (a partial build) or because it is the
+                # all-orange round, which is the THIRD structure and never visits
+                # the purple area at all.  Operator, 2026-10-02: 「第三次从搭建区去
+                # 取物 去取3个橙色 然后执行动作直接搭建三层」, 「搭第3栋（最后一次）」,
+                # and for this leg 「直接去」.  See `all_orange_round`.
                 self._enter(
                     RouteState.DIRECT_ORANGE_D330
-                    if self.loop_context.has_purple
+                    if (self.loop_context.has_purple
+                        or all_orange_round(self.loop_context))
                     else RouteState.JUNCTION_2_TO_JUNCTION_3,
                     now,
                 )

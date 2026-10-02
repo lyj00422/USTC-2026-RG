@@ -1186,7 +1186,20 @@ class RouteRunner:
                     self._actual_speed = max(abs(float(item)) for item in match.group(1).split())
             elif getattr(reply, "kind", None) == "encoder":
                 numbers = [float(item) for item in re.findall(r"(?:LF|RF|LR|RR)\s+(-?\d+(?:\.\d+)?)", value)]
-                if numbers:
+                # EXACTLY four, not merely "some".  This used to be `if numbers:`,
+                # and a TRUNCATED reply -- three of the four labels present, which
+                # one short read is enough to produce -- went straight into
+                # `_forward_counts`, whose first statement unpacks four of them.
+                # The ValueError escaped to the top-level handler and killed the
+                # whole run: field, run route_v2_full_20261002_094750,
+                # `FAULT_SAFE: not enough values to unpack (expected 4, got 3)`,
+                # 102 cm into JUNCTION_PICKUP_2_TO_AREA with the car driving
+                # perfectly.
+                #
+                # Dropping a partial frame costs ONE tick of odometry -- the next
+                # poll refreshes it, and `_last_encoder_raw` still holds the
+                # previous value in the meantime.  A crash costs the run.
+                if len(numbers) == 4:
                     # Keep the four raw counts as well as their mean.  The mean
                     # is meaningless on this chassis -- the wheels are mounted
                     # mirrored, so an in-place translation reads as wheels
@@ -1399,7 +1412,22 @@ class RouteRunner:
                         apply_build_action(self.machine.loop_context, completed)
                     if remaining:
                         self.machine.loop_context.build_plan = remaining[1:]
-                        action_executor.set_action("RESET")
+                        # BETWEEN THE TWO HALVES OF A STRUCTURE the gap is a
+                        # FORWARD step, not the arm reset.
+                        #
+                        # Operator, 2026-10-02: 「搭建完两层后 机械臂不是还要复位吗
+                        # 把这个复位动作替换成前进5cm 速度20」 -- the car has to
+                        # creep up to the wall after the two orange layers, and the
+                        # reset was dead time anyway: BUILD_BASE's own tail already
+                        # walks id 1/2/3 home (1520 / 1500 / 1400) and step 13 puts
+                        # id 0 at 1840, which IS the reset pose.
+                        #
+                        # `_pickup_reset_phase` keeps its name and its meaning here:
+                        # it marks "a staging move runs before the real action", not
+                        # "the reset package runs".  The first action of a visit
+                        # still gets the real RESET (see the BUILD_ACTION entry
+                        # above) -- the arm has not been home since the last pickup.
+                        action_executor.set_action("BUILD_ADVANCE")
                         self._pending_pickup_action = remaining[0]
                         self._pickup_reset_phase = True
                         action_result = None
@@ -2433,6 +2461,11 @@ def _run_hardware(config: RouteV2Config, args, selected: tuple[RouteState, ...],
         build_action = ActionCatalogExecutor(
             {
                 "RESET": compiled["reset"],
+                # The staging move between the two halves of a structure: 5 cm
+                # forward at speed 20, so the car creeps up to the wall after the
+                # two orange layers and before the cap.  See the plan-advance
+                # branch in `tick`.
+                "BUILD_ADVANCE": compiled["build_advance"],
                 "BUILD_BASE": compiled["build_base"],
                 "BUILD_2": compiled["build_two"],
                 "BUILD_3": compiled["build_three"],

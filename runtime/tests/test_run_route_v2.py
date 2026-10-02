@@ -376,8 +376,8 @@ def _orange_vision_runtime():
     return runtime
 
 
-def test_purple_visits_walk_the_slots_middle_left_right(monkeypatch):
-    """「先取中间 再取左边 在取右边」, counted per VISIT.
+def test_purple_visits_walk_the_slots_middle_right_left(monkeypatch):
+    """「第一次中间 第二次右边」, counted per VISIT.
 
     The J3 prescan that used to decide this is retired (「不必要在j3判定有没有紫色了
     ... 一定有三个紫色」), so the route just counts.  The first look follows the slot
@@ -408,15 +408,15 @@ def test_purple_visits_walk_the_slots_middle_left_right(monkeypatch):
     runtime._select(VisionTask.TAG4, RouteState.PICKUP_2_SEEK_LINE, 0.0)
     runtime._task = VisionTask.NONE
     runtime._select(VisionTask.PURPLE_CLOSE, RouteState.PICKUP_VISION_ONLY, 8.0)
-    assert runtime._purple_target_slot == 1
+    assert runtime._purple_target_slot == 3
 
     runtime._task = VisionTask.NONE
     runtime._select(VisionTask.TAG4, RouteState.PICKUP_2_SEEK_LINE, 0.0)
     runtime._task = VisionTask.NONE
     runtime._select(VisionTask.PURPLE_CLOSE, RouteState.PICKUP_VISION_ONLY, 12.0)
-    assert runtime._purple_target_slot == 3
+    assert runtime._purple_target_slot == 1
 
-    assert seen == ["center", "center", "left", "right"]
+    assert seen == ["center", "center", "right", "left"]
 
 
 def _leave_the_orange_area(runtime):

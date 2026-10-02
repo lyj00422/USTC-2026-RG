@@ -12,7 +12,14 @@ from dataclasses import dataclass
 # the area always holds all three, and which one this visit goes for is just how
 # many visits have already gone.  Slot numbers are the prescan's own: 1 = left,
 # 2 = centre, 3 = right (see the `_select` hint map in run_route_v2).
-PURPLE_PICK_ORDER = (2, 1, 3)
+#
+# Operator, 2026-10-02, later the same day: 「紫色抓取 固定成 第一次中间 第二次右边」
+# -- the second visit goes RIGHT, and the left slot moves to the back of the
+# queue.  Only the first two entries are load-bearing now: the third structure is
+# all-orange (`all_orange_round`), so the round only ever takes two purple.  The
+# left stays last rather than being dropped, because 「一定有三个紫色」 is still
+# the field promise and a third visit must still aim somewhere sensible.
+PURPLE_PICK_ORDER = (2, 3, 1)
 
 
 def next_purple_slot(visit: int) -> int:
@@ -178,8 +185,42 @@ def orange_capacity(*, purple_count: int, orange_count: int) -> int:
     return remaining
 
 
+# The structure number from which the round is all-orange.
+#
+# Operator, 2026-10-02: 「第三次从搭建区去取物 去取3个橙色 然后执行动作直接搭建三层」,
+# asked which round that was and answered 「搭第3栋（最后一次）」.  Structures 1 and 2
+# keep the 1-purple + 2-orange round; the THIRD is fetched as three orange and
+# built by BUILD_3 alone (「从吸盘右侧左侧搭建三个橙色」) -- the car never goes back
+# to the purple area, so the third purple stays where it is and the chassis
+# arrives EMPTY, which is what lets all three slots fill with orange.
+ORANGE_ONLY_FROM_STRUCTURE = 3
+
+
+def all_orange_round(context: LoopContext) -> bool:
+    """True when the NEXT structure is the all-orange one.
+
+    `building_count` counts the structures standing, so the round that builds
+    the third one is the round that starts with two of them up.
+    """
+    return context.building_count >= ORANGE_ONLY_FROM_STRUCTURE - 1
+
+
 def next_route_after_build(context: LoopContext) -> str:
-    return "DIRECT_ORANGE_D330" if context.has_purple else "J3_PURPLE_CHECK"
+    """Which leg leaves the build area.
+
+    DIRECT_ORANGE_D330 is the 搭建区 -> 取物区1 leg: it skips J2, J3 and the purple
+    area entire and arrives at the orange pickup.  That is right in two cases:
+
+      * a purple is still on the chassis (a partially built round needs only
+        orange), and
+      * the all-orange round above, which has nothing to collect at the purple
+        area at all.
+
+    Otherwise the car goes back through J3, where the purple round starts.
+    """
+    if context.has_purple or all_orange_round(context):
+        return "DIRECT_ORANGE_D330"
+    return "J3_PURPLE_CHECK"
 
 
 # The plan actions that put a CAP on a stack that is already standing, as opposed

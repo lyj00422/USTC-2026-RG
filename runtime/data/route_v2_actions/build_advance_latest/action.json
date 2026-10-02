@@ -1,0 +1,16 @@
+{
+  "name": "搭建两层后前进5cm",
+  "named": true,
+  "protocol": "RG-ARM-1",
+  "steps": [
+    {
+      "kind": "CHASSIS",
+      "command": "distance",
+      "forward_cm": 8,
+      "right_cm": 0,
+      "rotate_deg": 0,
+      "speed": 20
+    }
+  ],
+  "zones": {}
+}
