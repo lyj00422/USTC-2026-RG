@@ -236,6 +236,9 @@ class ActionPackageExecutor:
         # once SHORTER than the moves and cut them short, which the operator read as
         # 「抓取的后退总是执行没成功」.
         distance_timeout_s: float = 5.0,
+        distance_verdict_s: float = 0.5,
+        distance_resend_settle_s: float = 0.3,
+        max_distance_retries: int = 1,
         suction_settle_s: float = 0.0,
         arm_lift_settle_s: float = 0.0,
         arm_move_settle_s: float = 0.0,
@@ -248,6 +251,12 @@ class ActionPackageExecutor:
             raise ValueError("ack_timeout_s and action_ref are required")
         if distance_timeout_s <= 0:
             raise ValueError("distance_timeout_s must be positive")
+        if distance_verdict_s <= 0:
+            raise ValueError("distance_verdict_s must be positive")
+        if distance_resend_settle_s < 0:
+            raise ValueError("distance_resend_settle_s cannot be negative")
+        if max_distance_retries < 0:
+            raise ValueError("max_distance_retries cannot be negative")
         if suction_settle_s < 0 or arm_lift_settle_s < 0 or arm_move_settle_s < 0:
             raise ValueError("settle times cannot be negative")
         self.steps = tuple(steps)
@@ -286,6 +295,36 @@ class ActionPackageExecutor:
         # visible and costs only time -- and with the deadline no longer below the
         # moves' own duration, that wait should now be rare.
         self.distance_timeout_s = float(distance_timeout_s)
+        # How long to wait, after a `D` deadline expires, before deciding what
+        # to do about it.  The move is stopped first and the chassis is then left
+        # alone, so the runner's encoder polls can answer the only question that
+        # matters: did the car move at all?
+        #
+        # That question is the whole reason a naive retry is unsafe.  The
+        # firmware RESTARTS a re-sent `D`, so re-issuing a move that was merely
+        # slow drives it a second time from wherever it had got to.  0.5 s is
+        # ~4 poll ticks at the runner's 0.15 s cadence -- enough for a reading
+        # that postdates the STOP.
+        self.distance_verdict_s = float(distance_verdict_s)
+        # Quiet gap between the retry's STOP and the re-sent `D`.
+        #
+        # This is the state machine's own proven recipe, copied: its `d` branch
+        # flushes a STOP and then waits `D_SETTLE_S` before sending, because
+        # "the chassis answers only the FIRST command of a burst" -- a `D`
+        # arriving inside a STOP/V stream is dropped, and on 2026-09-22 that was
+        # measured swallowing turn after turn until the flush was added.  The
+        # first retry (2026-10-03, `route_v2_full_20261003_122052`) re-sent the
+        # `D` with no gap of its own and the car still did not move, so the
+        # re-send gets the same treatment the turns got.
+        self.distance_resend_settle_s = float(distance_resend_settle_s)
+        self._distance_resend_at: float | None = None
+        # How many times a `D` may be RE-SENT when the verdict says the car never
+        # moved.  One: a second identical loss means something the route cannot
+        # fix by asking again, and the operator wants the arm to carry on rather
+        # than the run to stall.
+        self.max_distance_retries = int(max_distance_retries)
+        self._distance_retries = 0
+        self._distance_verdict_at: float | None = None
         # Hold after the arm acknowledges a SUCTION-ON step, before the next step
         # runs.  Operator, 2026-09-29, for the purple pickup: 「要求吸的动作执行
         # 之后 停顿1s」 -- the vacuum needs a moment to take hold, and the recorded
@@ -410,7 +449,8 @@ class ActionPackageExecutor:
         return self._result(chassis_stop=True)
 
     def step(
-        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False
+        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False,
+        chassis_moved: bool | None = None,
     ) -> PickupActionResult:
         if self._fault is not None or self._done:
             return self._result()
@@ -492,6 +532,7 @@ class ActionPackageExecutor:
             if self._distance_deadline is not None:
                 if chassis_done:
                     self._distance_deadline = None
+                    self._distance_retries = 0
                     self._index += 1
                     if self._index >= len(self.steps):
                         self._done = True
@@ -513,11 +554,64 @@ class ActionPackageExecutor:
                     # on top of it.  STOP is idempotent, so this is free when the
                     # move really was lost.
                     self._distance_deadline = None
+                    # Do NOT advance yet, and do not report the loss yet: the
+                    # deadline expiring only says the firmware never said DONE.
+                    # Until 2026-10-03 this advanced straight away, and the
+                    # operator watched the arm come down on a car that had not
+                    # reversed -- `purple_pickup_latest`'s `D -12` lost three
+                    # times in one afternoon, each time ending the same way.
+                    #
+                    # The STOP above is what makes the next question answerable:
+                    # with the move abandoned and the chassis left alone, the
+                    # runner's own encoder polls can say whether the car moved
+                    # at all.  `chassis_moved` is that answer, and it is the only
+                    # thing that makes a RE-SEND safe -- re-sending a move that
+                    # was merely slow makes the firmware drive it twice.
+                    self._distance_verdict_at = now + self.distance_verdict_s
+                    return self._result(chassis_stop=True)
+                return self._result()
+
+            if self._distance_verdict_at is not None:
+                if now >= self._distance_verdict_at:
+                    self._distance_verdict_at = None
+                    if (chassis_moved is False
+                            and self._distance_retries < self.max_distance_retries):
+                        # The car never moved, so the firmware swallowed the
+                        # frame rather than running it slowly.  Safe to ask
+                        # again: there is no move in flight to restart.
+                        #
+                        # STOP first and re-send only after
+                        # `distance_resend_settle_s` of quiet, so the re-sent `D`
+                        # is the first command of its own burst -- the fix the
+                        # state machine's `d` branch already carries for exactly
+                        # this failure.  `chassis_active` keeps the runner off
+                        # the port for the whole flight, so the gap really is
+                        # quiet once the STOP this tick carries has landed.
+                        self._distance_retries += 1
+                        self._distance_resend_at = now + self.distance_resend_settle_s
+                        return self._result(chassis_stop=True)
+                    # Moved (so the move did run and only the DONE was lost), or
+                    # out of retries.  Take the old road: report it and advance.
+                    # STOP on the reporting tick as well as on the deadline tick
+                    # -- unchanged from before this retry existed, and worth
+                    # keeping: whatever the verdict said, a `D` the firmware
+                    # never finished may still be in flight somewhere.
                     self._distance_timeout = self._last_distance_command
+                    self._distance_retries = 0
                     self._index += 1
                     if self._index >= len(self.steps):
                         self._done = True
                     return self._result(chassis_stop=True)
+                # Waiting for a reading that postdates the STOP.
+                return self._result()
+
+            if self._distance_resend_at is not None:
+                # The quiet gap before a re-sent `D` has elapsed: send it now, as
+                # the state machine's `d` branch does after its own settle.
+                if now >= self._distance_resend_at:
+                    self._distance_resend_at = None
+                    self._distance_deadline = now + self.distance_timeout_s
+                    return self._result(chassis_distance=self._last_distance_command)
                 return self._result()
 
             if self._index >= len(self.steps):
@@ -642,10 +736,12 @@ class ActionCatalogExecutor:
         self._executor.reset()
 
     def step(
-        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False
+        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False,
+        chassis_moved: bool | None = None,
     ) -> PickupActionResult:
         result = self._executor.step(
-            now=now, stop_acknowledged=stop_acknowledged, chassis_done=chassis_done
+            now=now, stop_acknowledged=stop_acknowledged, chassis_done=chassis_done,
+            chassis_moved=chassis_moved,
         )
         metadata = dict(result.metadata)
         metadata["selected_action"] = self.action
@@ -713,7 +809,8 @@ class PlaceholderActionExecutor:
         self._started_at = None
 
     def step(
-        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False
+        self, *, now: float, stop_acknowledged: bool, chassis_done: bool = False,
+        chassis_moved: bool | None = None,
     ) -> PickupActionResult:
         # Accepted and ignored -- see VisionOnlyPickupExecutor.step.
         if self._started_at is None:

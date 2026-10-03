@@ -67,7 +67,24 @@ def _frame_signature(image) -> bytes | None:
 # one has taken the blocks off that side by then.  The sweep is still two-sided and
 # bounded either way; this only changes which end it starts from, so a miss costs a
 # sweep rather than a grab.  Three visits is the whole round (「重复3次」).
-_ORANGE_RIGHT_FIRST_VISIT = 2
+#
+# Operator, 2026-10-03: 「第一次到取物区 优先向左边找 第二次 优先左边找 第三次 优先
+# 右边找」 -- so only the FIRST TWO visits sweep left, and the third sweeps right.
+# That moves this threshold 2 -> 3.  The reason the third one flips is the one the
+# 2026-10-02 note already gave, read one visit later: by the third visit the left
+# side is the side that has been emptied twice.
+_ORANGE_RIGHT_FIRST_VISIT = 3
+
+# How far the odometer must have changed for an ACTION `D` to count as having
+# MOVED.  Used only after the move's deadline has expired, to decide between
+# "the firmware swallowed the frame" and "the DONE was lost but the car did
+# drive" -- the first is safe to re-send, the second is not (the firmware
+# restarts a re-sent `D`).
+#
+# 0.5 cm: every package `D` is a whole centimetre or more, and the encoder
+# resolves ~59 counts/cm, so a real move of any of them clears this by a wide
+# margin while sensor noise on a parked car does not.
+_ACTION_D_MOVED_CM = 0.5
 
 
 def _orange_return_direction(net_lateral_cm: float) -> int:
@@ -788,7 +805,7 @@ def _configure_camera(
     tag 2 enters the frame.
 
     WHICH PROPERTIES TO SET, measured 2026-09-15 on this Pi with
-    _pi_cam_config_probe.py -- six configurations, each opened, then asked for
+    the camera configuration probe -- each candidate is opened, then asked for
     fifteen real frames:
 
         FOURCC, WIDTH, HEIGHT       15/15 frames, 1280x720
@@ -1131,6 +1148,15 @@ class RouteRunner:
         self._d_pending_key: tuple | None = None
         self._d_settle_at = 0.0
         self._d_done = False
+        # Where the odometer stood when the last ACTION `D` was dispatched, and
+        # the evidence a lost move is judged on.  An action `D` is dispatched
+        # once and the runner then sends nothing at all while it is in flight
+        # (`action_owns_chassis` keeps both the STOP and the queries off it), so
+        # the odometer CANNOT move during the move -- a frozen `travel_cm` there
+        # says nothing at all.  It is only after the deadline, once the executor
+        # has stopped waiting and the polls resume, that a reading means
+        # anything; that is why the executor asks for one (`distance_verdict_s`).
+        self._action_d_origin: tuple[float, float] | None = None
         self._actual_speed = 0.0
         self._encoder_delta = 0.0
         self._encoder_delta_forward = 0.0
@@ -1272,7 +1298,7 @@ class RouteRunner:
                 # NO QUERY HERE -- deliberately, and do not put one back.
                 #
                 # This branch used to write SPD and ENC back to back, and the
-                # firmware answers only the FIRST command of a burst (handoff
+                # firmware answers only the FIRST command of a burst (field notes
                 # section 6.1, measured).  So ENC was the one it dropped, on
                 # exactly the three legs whose arrival test reads the odometer.
                 # Measured 2026-09-15 on JUNCTION_3_TO_PICKUP: SPD produced 25
@@ -1382,12 +1408,27 @@ class RouteRunner:
                 self._pickup_action_triggered = True
             if (self._pickup_action_triggered and visual_input is not None
                     and not visual_input.action_done):
+                # Did the odometer move since the last ACTION `D` was sent?  Only
+                # meaningful once the executor has stopped waiting -- while the
+                # move is in flight the runner queries nothing, so the reading is
+                # stale and this stays False, which is the conservative answer
+                # (the executor only re-sends on an explicit False).
+                action_moved: bool | None = None
+                if (self._action_d_origin is not None
+                        and travel_cm is not None and lateral_cm is not None):
+                    origin_forward, origin_lateral = self._action_d_origin
+                    action_moved = (
+                        abs(travel_cm - origin_forward) > _ACTION_D_MOVED_CM
+                        or abs(lateral_cm - origin_lateral) > _ACTION_D_MOVED_CM
+                    )
                 action_result = action_executor.step(
                     now=now,
                     stop_acknowledged=self._last_intent_kind in {"stop", "wait"},
                     # A package `D` move is closed-loop in the firmware, so the
                     # executor waits for this tick's `DONE` rather than timing it.
                     chassis_done=self._d_done,
+                    # ... and this is how it tells "swallowed" from "slow".
+                    chassis_moved=action_moved,
                 )
                 visual_diagnostics["pickup_action"] = dict(action_result.metadata)
                 reset_finished = (
@@ -1496,6 +1537,13 @@ class RouteRunner:
             self._d_done = False
             self._last_stop_at = -float("inf")
             issued = f"ACTION D {forward_cm} {right_cm} {rotate_deg} {speed}"
+            # Latch the odometer, so the executor can tell a swallowed `D` (the
+            # car never moved) from a slow one (it did).  Re-latched on a
+            # re-send, because a re-send arrives through this same line.
+            self._action_d_origin = (
+                None if travel_cm is None or lateral_cm is None
+                else (travel_cm, lateral_cm)
+            )
         elif action_result is not None and action_result.chassis_velocity is not None:
             vx, vy, wz = action_result.chassis_velocity
             self.chassis.set_velocity(vx, vy, wz)

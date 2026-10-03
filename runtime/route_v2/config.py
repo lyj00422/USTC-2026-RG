@@ -238,7 +238,7 @@ class RouteV2Config:
     turn_speed: int = 80
     # Which way a POSITIVE D rotate_deg turns the car.
     #
-    # MEASURED 2026-09-15 with _pi_turn_probe.py: `D 0 0 90 30` turned the car
+    # MEASURED 2026-09-15 with the field turn calibration tool: `D 0 0 90 30` turned the car
     # exactly 90 degrees to the LEFT, confirmed by the operator by eye, and the
     # encoder yaw projection agreed -- all four wheels advanced together
     # (LF +3341 RF +3364 LR +3329 RR +3316) while the forward and lateral
@@ -902,15 +902,15 @@ class RouteV2Config:
     # PLACEMENT, the N-th stack for a CAP -- is this far to the RIGHT of the pose
     # the visit arrived at:
     #
-    #     offset_cm = build_right_step_cm * (skip + 1)
+    #     offset_cm = build_first_right_cm + build_right_step_cm * skip
     #
     # where `skip` is the counter the strategy already keeps: building_count for a
     # placement, cap_count for a cap.  Both give the SAME formula, which is the
     # point -- there is no vision left in this decision:
     #
     #     1st structure -> 5 cm      1st stack capped -> 5 cm
-    #     2nd structure -> 10 cm     2nd stack capped -> 10 cm
-    #     3rd structure -> 15 cm     3rd stack capped -> 15 cm
+    #     2nd structure -> 30 cm     2nd stack capped -> 30 cm
+    #     3rd structure -> 55 cm     3rd stack capped -> 55 cm
     #
     # Operator, 2026-10-01: 「把视觉替换成距离 策略不变 但是搭建的时候不用避开方块什么的
     # 第一栋就到搭建区右移5cm 第二栋右移10cm 第三栋15cm ... 要封顶第一层就到了搭建区右移
@@ -934,8 +934,8 @@ class RouteV2Config:
     build_first_right_cm: float = 5.0
     #
     # """步进""": 相邻两栋的**间隔**。第 N 栋 = first + step * (N-1)，所以
-    #     第 1 栋 5cm  第 2 栋 20cm  第 3 栋 35cm ...
-    build_right_step_cm: float = 20.0
+    #     第 1 栋 5cm  第 2 栋 30cm  第 3 栋 55cm ...
+    build_right_step_cm: float = 25.0
     #
     # -- Everything below here is the VISION positioning, retired 2026-10-01 -----
     # KEPT, NOT DELETED: the vision path can be restored by uncommenting its block

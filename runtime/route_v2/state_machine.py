@@ -1943,7 +1943,8 @@ class RouteV2StateMachine:
                 # relaxed: a car this far right of the pose it arrived at has an
                 # odometer that disagrees with the commands it was given, so it holds
                 # where it is and NEVER builds.  Every real target is
-                # build_right_step_cm * (skip + 1) -- 20 cm at the top -- so the only
+                # build_first_right_cm + build_right_step_cm * skip -- 55 cm at the
+                # top (the 3rd structure) -- so the only
                 # way to be out here is a reading that is not describing this car's
                 # motion.  Latching, rather than merely returning, is what keeps the
                 # hold held; _enter() clears it, so the next visit re-arms.

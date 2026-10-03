@@ -3,85 +3,85 @@
     "reset": {
       "path": "reset_final",
       "name": "复位_final",
-      "source": "local-materials/new-pkgs-20260929/reset_final_latest",
+      "source": "runtime/data/route_v2_actions/reset_final",
       "window_required": null
     },
     "purple_pickup": {
       "path": "purple_pickup_latest",
       "name": "吸紫色到左边",
-      "source": "local-materials/new-pkgs-20260929/purple_pickup_latest",
+      "source": "runtime/data/route_v2_actions/purple_pickup_latest",
       "window_required": false
     },
     "orange_left": {
       "path": "orange_left_latest",
       "name": "吸橙色放左边",
-      "source": "local-materials/new-pkgs-20260929/orange_left_latest",
+      "source": "runtime/data/route_v2_actions/orange_left_latest",
       "window_required": false
     },
     "orange_right": {
       "path": "orange_right_latest",
       "name": "吸橙色放右边",
-      "source": "local-materials/new-pkgs-20260929/orange_right_latest",
+      "source": "runtime/data/route_v2_actions/orange_right_latest",
       "window_required": false
     },
     "orange_hold": {
       "path": "orange_hold_latest",
       "name": "吸橙色吸住-正确版",
-      "source": "local-materials/new-pkgs-20260929/orange_hold_latest",
+      "source": "runtime/data/route_v2_actions/orange_hold_latest",
       "window_required": false
     },
     "build_base": {
       "path": "build_base_latest",
       "name": "从吸盘和右侧搭两层",
-      "source": "local-materials/new-pkgs-20260929/build_base_latest",
+      "source": "runtime/data/route_v2_actions/build_base_latest",
       "window_required": false
     },
     "cap_purple": {
       "path": "cap_purple_latest",
       "name": "从左吸搭第三层",
-      "source": "local-materials/new-pkgs-20260929/cap_purple_latest",
+      "source": "runtime/data/route_v2_actions/cap_purple_latest",
       "window_required": false
     },
     "top_right_purple": {
       "path": "top_right_purple_latest",
       "name": "从右侧和左侧吸橙色和紫色搭三四层",
-      "source": "local-materials/new-pkgs-20260929/top_right_purple_latest",
+      "source": "runtime/data/route_v2_actions/top_right_purple_latest",
       "window_required": false
     },
     "top_suction_purple": {
       "path": "top_suction_purple_latest",
       "name": "从吸盘和左侧吸橙色和紫色搭三四层",
-      "source": "local-materials/new-pkgs-20260929/top_suction_purple_latest",
+      "source": "runtime/data/route_v2_actions/top_suction_purple_latest",
       "window_required": false
     },
     "build_three": {
       "path": "build_three_latest",
       "name": "从吸盘右侧左侧搭建三个橙色",
-      "source": "local-materials/new-pkgs-20260929/build_three_latest",
+      "source": "runtime/data/route_v2_actions/build_three_latest",
       "window_required": false
     },
     "build_two": {
       "path": "build_two_latest",
       "name": "从左侧和右边搭两层",
-      "source": "local-materials/new-pkgs-20260929/build_two_latest",
+      "source": "runtime/data/route_v2_actions/build_two_latest",
       "window_required": false
     },
     "place_orange": {
       "path": "place_orange_latest",
       "name": "搭一层",
-      "source": "local-materials/new-pkgs-20260929/place_orange_latest",
+      "source": "runtime/data/route_v2_actions/place_orange_latest",
       "window_required": false
     },
     "place_purple": {
       "path": "cap_purple_latest",
       "name": "从左吸搭第三层",
-      "source": "local-materials/new-pkgs-20260929/cap_purple_latest",
+      "source": "runtime/data/route_v2_actions/cap_purple_latest",
       "window_required": false
     },
     "build_advance": {
       "path": "build_advance_latest",
       "name": "搭建两层后前进5cm",
-      "source": "operator-20261002",
+      "source": "runtime/data/route_v2_actions/build_advance_latest",
       "window_required": false
     }
   }

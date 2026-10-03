@@ -6,7 +6,7 @@
     {
       "kind": "CHASSIS",
       "command": "distance",
-      "forward_cm": 8,
+      "forward_cm": 13,
       "right_cm": 0,
       "rotate_deg": 0,
       "speed": 20
